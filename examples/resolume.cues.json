@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1,
+    "name": "Intro - clip 1",
+    "at": { "hours": 10, "minutes": 0, "seconds": 5, "frames": 0, "drop_frame": false },
+    "enabled": true,
+    "action": {
+      "Osc": {
+        "address": "/composition/layers/1/clips/1/connect",
+        "args": [{ "Int": 1 }]
+      }
+    }
+  },
+  {
+    "id": 2,
+    "name": "Drop - clip 2",
+    "at": { "hours": 10, "minutes": 0, "seconds": 10, "frames": 0, "drop_frame": false },
+    "enabled": true,
+    "action": {
+      "Osc": {
+        "address": "/composition/layers/1/clips/2/connect",
+        "args": [{ "Int": 1 }]
+      }
+    }
+  },
+  {
+    "id": 3,
+    "name": "Blackout - layer 1 clear",
+    "at": { "hours": 10, "minutes": 0, "seconds": 20, "frames": 0, "drop_frame": false },
+    "enabled": true,
+    "action": {
+      "Osc": {
+        "address": "/composition/layers/1/clear",
+        "args": [{ "Int": 1 }]
+      }
+    }
+  }
+]

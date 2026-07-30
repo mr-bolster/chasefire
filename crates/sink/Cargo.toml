@@ -1,6 +1,6 @@
 [package]
-name = "ltc"
-description = "SMPTE Linear Timecode (LTC) decoder and encoder, free of any I/O"
+name = "sink"
+description = "Outputs for fired cues: OSC today, MIDI and RTP-MIDI next"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,4 +9,4 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+cue = { path = "../cue" }

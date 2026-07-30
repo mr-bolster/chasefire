@@ -14,6 +14,7 @@
 //! 0..64 carry the timecode and user bits as BCD; bits 64..80 are a fixed sync
 //! word that also tells you which direction the tape (or the file) is running.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Sync word as it appears once a whole frame has been shifted in, playing forward.
@@ -25,7 +26,7 @@ const SYNC_REVERSE: u16 = 0x3FFD;
 const FRAME_BITS: u32 = 80;
 
 /// A timecode value: hours, minutes, seconds, frames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Timecode {
     pub hours: u8,
     pub minutes: u8,
