@@ -98,9 +98,8 @@ impl Generator {
 
             let filled_at = started.elapsed().as_nanos() as u64;
             let nanos_per_sample = 1.0e9 / sample_rate as f64;
-            let mut written = 0u64;
 
-            for slot in output.chunks_mut(channels) {
+            for (written, slot) in output.chunks_mut(channels).enumerate() {
                 if position >= frame_samples.len() {
                     frame_samples.clear();
                     encoder.encode_frame(
@@ -129,7 +128,6 @@ impl Generator {
                 }
                 let sample = frame_samples[position];
                 position += 1;
-                written += 1;
                 // Same signal on every channel: whichever one the cable is on
                 // carries timecode.
                 for destination in slot.iter_mut() {
