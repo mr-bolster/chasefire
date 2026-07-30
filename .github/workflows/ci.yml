@@ -20,6 +20,11 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      # cpal talks to ALSA on Linux, and alsa-sys needs its headers to build.
+      # The Windows runner needs nothing: WASAPI comes with the system.
+      - name: ALSA headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
