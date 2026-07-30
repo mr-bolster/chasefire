@@ -3,9 +3,18 @@
 version = 3
 
 [[package]]
+name = "chase"
+version = "0.1.0"
+dependencies = [
+ "cue",
+ "ltc",
+]
+
+[[package]]
 name = "chasefire-cli"
 version = "0.1.0"
 dependencies = [
+ "chase",
  "cue",
  "hound",
  "ltc",

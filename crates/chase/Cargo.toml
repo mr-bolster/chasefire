@@ -1,0 +1,15 @@
+[package]
+name = "chase"
+description = "Decides which decoded frames to believe: parity, continuity and freewheel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ltc = { path = "../ltc" }
+
+[dev-dependencies]
+cue = { path = "../cue" }

@@ -113,6 +113,11 @@ pub struct DecodedFrame {
     pub user_bits: u32,
     /// Frame rate implied by the measured bit period.
     pub estimated_fps: f32,
+    /// Whether the 80-bit word has an even number of ones, as the parity bit
+    /// is supposed to guarantee. `false` means at least one bit is wrong —
+    /// though only if the source bothered to set the bit at all, which is why
+    /// [`Decoder::source_respects_parity`] exists.
+    pub parity_ok: bool,
     /// Index of the sample that closed this frame, counted from the first
     /// sample ever pushed. This is what lets a cue fire with a known offset
     /// instead of "whenever the GUI thread got round to it".
@@ -184,6 +189,9 @@ pub struct Decoder {
     pending_half: Option<u32>,
 
     lock: Lock,
+    parity_checked: u32,
+    parity_failed: u32,
+    rejected_frames: u32,
     register: u128,
     bits_filled: u32,
     sample_index: u64,
@@ -207,6 +215,9 @@ impl Decoder {
             samples_since_edge: 0,
             pending_half: None,
             lock: Lock::Locked,
+            parity_checked: 0,
+            parity_failed: 0,
+            rejected_frames: 0,
             register: 0,
             bits_filled: 0,
             sample_index: 0,
@@ -383,9 +394,15 @@ impl Decoder {
             return None;
         };
 
-        let timecode = decode_timecode(payload);
-        if !timecode.is_plausible() {
+        let Some(timecode) = decode_timecode(payload) else {
+            self.rejected_frames = self.rejected_frames.saturating_add(1);
             return None;
+        };
+
+        let parity_ok = parity_is_even(payload);
+        self.parity_checked = self.parity_checked.saturating_add(1);
+        if !parity_ok {
+            self.parity_failed = self.parity_failed.saturating_add(1);
         }
 
         let estimated_fps = (self.sample_rate / (FRAME_BITS as f64 * self.bit_period)) as f32;
@@ -396,6 +413,7 @@ impl Decoder {
             reverse,
             user_bits: decode_user_bits(payload),
             estimated_fps,
+            parity_ok,
             end_sample: self.sample_index,
         })
     }
@@ -403,6 +421,24 @@ impl Decoder {
     /// Best current estimate of the incoming frame rate.
     pub fn estimated_fps(&self) -> f64 {
         self.sample_rate / (FRAME_BITS as f64 * self.bit_period)
+    }
+
+    /// Whether this source actually maintains the parity bit.
+    ///
+    /// `None` until enough frames have gone by to tell. Plenty of gear in the
+    /// wild leaves the bit alone — libltc's own decoder never looks at it — so
+    /// parity is only worth enforcing once a source has shown it keeps it.
+    pub fn source_respects_parity(&self) -> Option<bool> {
+        if self.parity_checked < 8 {
+            return None;
+        }
+        Some(self.parity_failed * 4 < self.parity_checked)
+    }
+
+    /// Frames that arrived with an intact sync word but impossible contents.
+    /// A rising count is the earliest sign that a feed is going bad.
+    pub fn rejected_frames(&self) -> u32 {
+        self.rejected_frames
     }
 
     /// Samples elapsed since the last good frame — how a caller notices the
@@ -465,14 +501,50 @@ fn field(payload: u128, start: u32, len: u32) -> u32 {
     ((payload >> start) & ((1u128 << len) - 1)) as u32
 }
 
-fn decode_timecode(payload: u128) -> Timecode {
-    Timecode {
-        frames: (field(payload, 0, 4) + field(payload, 8, 2) * 10) as u8,
-        seconds: (field(payload, 16, 4) + field(payload, 24, 3) * 10) as u8,
-        minutes: (field(payload, 32, 4) + field(payload, 40, 3) * 10) as u8,
-        hours: (field(payload, 48, 4) + field(payload, 56, 2) * 10) as u8,
-        drop_frame: field(payload, 10, 1) == 1,
+/// Pull the timecode out of a frame, refusing anything that is not valid BCD.
+///
+/// Each field is binary-coded decimal, so a units digit above 9 cannot happen
+/// in a frame that arrived intact. Checking costs nothing and catches a good
+/// share of corruption — and the reference implementation does not do it, which
+/// is part of why a weak feed produces plausible-looking wrong times.
+fn decode_timecode(payload: u128) -> Option<Timecode> {
+    let frame_units = field(payload, 0, 4);
+    let second_units = field(payload, 16, 4);
+    let second_tens = field(payload, 24, 3);
+    let minute_units = field(payload, 32, 4);
+    let minute_tens = field(payload, 40, 3);
+    let hour_units = field(payload, 48, 4);
+    let hour_tens = field(payload, 56, 2);
+
+    if frame_units > 9
+        || second_units > 9
+        || second_tens > 5
+        || minute_units > 9
+        || minute_tens > 5
+        || hour_units > 9
+        || hour_tens > 2
+    {
+        return None;
     }
+
+    let timecode = Timecode {
+        frames: (frame_units + field(payload, 8, 2) * 10) as u8,
+        seconds: (second_units + second_tens * 10) as u8,
+        minutes: (minute_units + minute_tens * 10) as u8,
+        hours: (hour_units + hour_tens * 10) as u8,
+        drop_frame: field(payload, 10, 1) == 1,
+    };
+    timecode.is_plausible().then_some(timecode)
+}
+
+/// True when the 80-bit word carries an even number of ones.
+///
+/// That is what the biphase mark phase correction bit is for: the encoder sets
+/// it so the total comes out even. Verifying costs one instruction and needs no
+/// knowledge of which bit it is — handy, because it lives at bit 27 for 24 and
+/// 30 fps but at bit 59 for 25.
+fn parity_is_even(payload: u128) -> bool {
+    (payload & ((1u128 << FRAME_BITS) - 1)).count_ones() % 2 == 0
 }
 
 fn decode_user_bits(payload: u128) -> u32 {
@@ -498,7 +570,7 @@ fn set_field(bits: &mut u128, start: u32, len: u32, value: u32) {
 }
 
 /// Build the 80 bits of one LTC frame.
-fn build_frame_bits(timecode: Timecode) -> u128 {
+fn build_frame_bits(timecode: Timecode, nominal_fps: u8) -> u128 {
     let mut bits = 0u128;
 
     set_field(&mut bits, 0, 4, (timecode.frames % 10) as u32);
@@ -514,6 +586,13 @@ fn build_frame_bits(timecode: Timecode) -> u128 {
     }
     // Sync word, bits 64..80.
     set_field(&mut bits, 64, 16, SYNC_FORWARD as u32);
+
+    // Parity, so the whole word carries an even number of ones. Bit 27 for 24
+    // and 30 fps, bit 59 for 25 — the one place the standards disagree.
+    if !parity_is_even(bits) {
+        let parity_bit = if nominal_fps == 25 { 59 } else { 27 };
+        set_field(&mut bits, parity_bit, 1, 1);
+    }
     bits
 }
 
@@ -535,12 +614,13 @@ impl Encoder {
     pub fn encode_frame(
         &mut self,
         timecode: Timecode,
+        nominal_fps: u8,
         fps: f64,
         sample_rate: f64,
         amplitude: f32,
         out: &mut Vec<f32>,
     ) {
-        let bits = build_frame_bits(timecode);
+        let bits = build_frame_bits(timecode, nominal_fps);
         let samples_per_bit = sample_rate / (FRAME_BITS as f64 * fps);
 
         for index in 0..FRAME_BITS {
@@ -573,7 +653,14 @@ impl Encoder {
         let mut timecode = spec.start;
         let mut written = Vec::with_capacity(spec.count as usize);
         for _ in 0..spec.count {
-            self.encode_frame(timecode, spec.fps, spec.sample_rate, spec.amplitude, out);
+            self.encode_frame(
+                timecode,
+                spec.nominal_fps,
+                spec.fps,
+                spec.sample_rate,
+                spec.amplitude,
+                out,
+            );
             written.push(timecode);
             timecode.advance_one_frame(spec.nominal_fps);
         }
@@ -895,6 +982,56 @@ mod tests {
             assert_ne!(
                 frame.timecode.frames, 42,
                 "frame 42 came back intact — the format cannot do that"
+            );
+        }
+    }
+
+    #[test]
+    fn what_we_generate_carries_correct_parity() {
+        // If our own encoder does not maintain the bit, our own decoder has no
+        // business enforcing it. Every rate, because the bit moves at 25 fps.
+        for (nominal, fps) in [(24u8, 24.0), (25, 25.0), (30, 30.0)] {
+            let mut audio = Vec::new();
+            Encoder::new().encode_sequence(
+                sequence(Timecode::new(3, 20, 10, 5), 10, nominal, fps),
+                &mut audio,
+            );
+            let mut decoder = Decoder::new(48_000.0, fps);
+            let mut decoded = Vec::new();
+            decoder.push_samples(&audio, &mut decoded);
+
+            assert!(!decoded.is_empty(), "{fps} fps decoded nothing");
+            assert!(
+                decoded.iter().all(|frame| frame.parity_ok),
+                "{fps} fps: our own frames fail their own parity check"
+            );
+            assert_eq!(decoder.source_respects_parity(), Some(true));
+        }
+    }
+
+    #[test]
+    fn rejects_digits_that_cannot_exist_in_bcd() {
+        // Corrupt a single nibble into an impossible decimal digit and the
+        // frame must be thrown away rather than passed on as a plausible time.
+        // libltc would hand this one straight to the application.
+        let mut bits = build_frame_bits(Timecode::new(1, 2, 3, 4), 25);
+        bits &= !(0xFu128 << 16); // clear the seconds units
+        bits |= 0xFu128 << 16; // ...and make it 15, which is not a digit
+        assert!(decode_timecode(bits).is_none(), "impossible BCD accepted");
+
+        // While a clean frame still decodes.
+        let clean = build_frame_bits(Timecode::new(1, 2, 3, 4), 25);
+        assert_eq!(decode_timecode(clean), Some(Timecode::new(1, 2, 3, 4)));
+    }
+
+    #[test]
+    fn parity_notices_a_single_flipped_bit() {
+        let bits = build_frame_bits(Timecode::new(5, 5, 5, 5), 30);
+        assert!(parity_is_even(bits), "encoder failed to set parity");
+        for bit in [0, 17, 33, 50, 63] {
+            assert!(
+                !parity_is_even(bits ^ (1u128 << bit)),
+                "flipping bit {bit} went unnoticed"
             );
         }
     }

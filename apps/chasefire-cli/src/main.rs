@@ -6,6 +6,7 @@
 //! It doubles as the simulator every tool like this needs anyway: rehearsing a
 //! cue list at eleven at night without dragging a timecode source into the room.
 
+use chase::{Chaser, Source};
 use cue::{Cue, Engine, Firing};
 use ltc::{Decoder, Timecode};
 use sink::{OscSink, Sink};
@@ -251,13 +252,61 @@ fn decode_wav(
         frames.last().unwrap().estimated_fps,
     );
 
-    let mut fired = 0;
+    // Count frames that do not follow on from the one before. LTC has no
+    // checksum, so a corrupted frame with an intact sync word decodes into a
+    // perfectly plausible-looking wrong time. Counting the discontinuities is
+    // how you tell a clean feed from one that is about to embarrass you.
+    let mut discontinuities = 0;
+    let mut previous: Option<Timecode> = None;
     for frame in &frames {
-        for firing in engine.update(frame.timecode, frame.reverse) {
+        if let Some(previous) = previous {
+            let mut expected = previous;
+            expected.advance_one_frame(engine.nominal_fps());
+            if frame.timecode != expected {
+                discontinuities += 1;
+            }
+        }
+        previous = Some(frame.timecode);
+    }
+    if discontinuities > 0 {
+        println!(
+            "Warning: {discontinuities} of {} frames did not follow the one before ({:.2}%)",
+            frames.len(),
+            100.0 * discontinuities as f64 / frames.len() as f64
+        );
+    }
+
+    // Everything the decoder produced now goes through the chaser, which
+    // decides what is believable before the cue engine ever sees it.
+    let mut chaser = Chaser::new(engine.nominal_fps());
+    if decoder.source_respects_parity() == Some(true) {
+        chaser.set_trust_parity(true);
+        println!("Source maintains the parity bit — enforcing it");
+    }
+
+    let mut fired = 0;
+    let mut freewheeled = 0;
+    for frame in &frames {
+        let Some(tick) = chaser.on_frame(frame) else {
+            continue;
+        };
+        if tick.source == Source::Freewheeled {
+            freewheeled += 1;
+        }
+        for firing in engine.update(tick.timecode, tick.reverse) {
             report(&firing, output);
             fired += 1;
         }
     }
+
+    let rejections = chaser.rejections();
+    println!(
+        "Chaser: {} accepted, {} held back on continuity, {} on parity, {} seeks, {freewheeled} counted",
+        rejections.accepted,
+        rejections.broke_continuity,
+        rejections.failed_parity,
+        rejections.seeks
+    );
     println!(
         "{fired} cues fired, {} still pending",
         engine.pending_count()
