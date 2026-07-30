@@ -10,6 +10,7 @@ use chase::{Chaser, Source};
 use cue::{Cue, Engine, Firing};
 use ltc::{Decoder, Timecode};
 use sink::{OscSink, Sink};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,7 @@ USAGE:
     chasefire-cli gen <file> [options]
     chasefire-cli listen --cues <file> [options]
     chasefire-cli devices
+    chasefire-cli latency --device <in> --out-device <out> [options]
 
 MODES:
     simulate          Generate timecode internally, in real time
@@ -29,6 +31,8 @@ MODES:
     gen <file>        Write a WAV of LTC to test with (--seconds, --from, --fps)
     listen            Read LTC live from a sound card and fire cues
     devices           List the audio inputs this machine has
+    latency           Measure the round trip: generate LTC out of one device,
+                      read it back on another, and time the difference
 
 OPTIONS:
     --cues <file>     Cue list, JSON (required)
@@ -41,7 +45,8 @@ OPTIONS:
                       frame numbering    [default: 10:00:00:00]
     --offset <n>      Fire n frames early          [default: 0]
     --channel <n>     Channel holding the LTC      [default: 1]
-    --device <name>   Input device for listen      [default: system default]
+    --device <name>   Input device                 [default: system default]
+    --out-device <n>  Output device for latency    [default: system default]
     --seconds <n>     Length for gen               [default: 30]
     --rate <hz>       Sample rate for gen:
                       44100, 48000, 96000          [default: 48000]
@@ -65,10 +70,12 @@ struct Options {
     seconds: u32,
     sample_rate: f64,
     device: Option<String>,
+    out_device: Option<String>,
     dry_run: bool,
 }
 
 enum Mode {
+    Latency,
     Listen,
     Devices,
     Simulate,
@@ -91,6 +98,9 @@ fn run() -> Result<(), String> {
     }
     if matches!(options.mode, Mode::Devices) {
         return list_devices();
+    }
+    if matches!(options.mode, Mode::Latency) {
+        return measure_latency(&options);
     }
 
     let cues = load_cues(&options.cues)?;
@@ -115,7 +125,7 @@ fn run() -> Result<(), String> {
         Mode::Simulate => simulate(&mut engine, &mut output, &options),
         Mode::Wav(path) => decode_wav(&mut engine, &mut output, &options, path),
         Mode::Listen => listen(&mut engine, &mut output, &options),
-        Mode::Gen(_) | Mode::Devices => unreachable!("handled above"),
+        Mode::Gen(_) | Mode::Devices | Mode::Latency => unreachable!("handled above"),
     }
 }
 
@@ -129,6 +139,113 @@ fn list_devices() -> Result<(), String> {
             if device.is_default { "  [default]" } else { "" },
             device.channels,
             device.sample_rate
+        );
+    }
+    Ok(())
+}
+
+/// Measure how long a frame takes to get from the output to a decoded result.
+///
+/// Loop one device's output into another's input and this times the whole path:
+/// output buffer, converter, cable, converter, input buffer, decode, and the
+/// poll that collects it. That number is what the offset setting exists to
+/// cancel, and measuring beats guessing.
+fn measure_latency(options: &Options) -> Result<(), String> {
+    let generator = audio::Generator::open(
+        options.out_device.as_deref(),
+        Timecode::new(10, 0, 0, 0),
+        options.nominal_fps,
+        options.fps,
+        0.5,
+    )
+    .map_err(|error| format!("output: {error}"))?;
+
+    let capture = audio::Capture::open(
+        options.device.as_deref(),
+        options.channel,
+        Some(options.fps),
+    )
+    .map_err(|error| format!("input: {error}"))?;
+
+    println!(
+        "Out: \"{}\" at {} Hz\nIn:  \"{}\" channel {} at {} Hz\nMeasuring...\n",
+        generator.device_name(),
+        generator.sample_rate(),
+        capture.device_name(),
+        capture.channel(),
+        capture.sample_rate()
+    );
+
+    // When each timecode was handed to the sound card, so the arrival of the
+    // same value on the way back can be subtracted from it.
+    let mut sent: HashMap<String, u64> = HashMap::new();
+    let mut round_trips: Vec<f64> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(12);
+
+    while Instant::now() < deadline && round_trips.len() < 200 {
+        while let Some(emitted) = generator.next_emitted() {
+            sent.insert(emitted.timecode.to_string(), emitted.at_nanos);
+        }
+        while let Some(frame) = capture.next_frame() {
+            let arrived = generator.elapsed_nanos();
+            if let Some(&departed) = sent.get(&frame.timecode.to_string()) {
+                round_trips.push((arrived - departed) as f64 / 1.0e6);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    if round_trips.len() < 10 {
+        return Err(format!(
+            "only matched {} frames — is the output really cabled to the input, \
+             and is the level high enough?",
+            round_trips.len()
+        ));
+    }
+
+    round_trips.sort_by(f64::total_cmp);
+    let median = round_trips[round_trips.len() / 2];
+    let lowest = round_trips[0];
+    let highest = round_trips[round_trips.len() - 1];
+    let spread = highest - lowest;
+    let frame_ms = 1000.0 / options.fps;
+
+    let reported_in = capture.input_latency_ms();
+    let reported_out = generator.output_latency_ms();
+
+    println!("Matched {} frames", round_trips.len());
+    println!("  fastest  {lowest:>7.1} ms");
+    println!(
+        "  median   {median:>7.1} ms   =  {:.1} frames at {:.2} fps",
+        median / frame_ms,
+        options.fps
+    );
+    println!("  slowest  {highest:>7.1} ms");
+    println!("  spread   {spread:>7.1} ms");
+
+    // The drivers themselves will say what each half costs, if the backend
+    // supports it. Worth printing next to the measurement: if the two agree,
+    // the reported figure can be trusted on machines with nothing patched.
+    println!("\nWhat the drivers report:");
+    println!("  input path   {reported_in:>7.1} ms");
+    println!("  output path  {reported_out:>7.1} ms");
+    let reported_total = reported_in + reported_out;
+    if reported_total > 0.0 {
+        println!(
+            "  sum          {reported_total:>7.1} ms   vs {median:.1} ms measured \
+             ({:+.1} ms out)",
+            reported_total - median
+        );
+    }
+
+    println!(
+        "\nOffset for a loop like this one: {} frames",
+        (median / frame_ms).round() as i32
+    );
+    if reported_in > 0.0 {
+        println!(
+            "Offset for timecode arriving from elsewhere: {} frames — only the \ninput path counts then.",
+            (reported_in / frame_ms).round() as i32
         );
     }
     Ok(())
@@ -516,6 +633,7 @@ fn parse_arguments() -> Result<Options, String> {
         seconds: 30,
         sample_rate: 48_000.0,
         device: None,
+        out_device: None,
         dry_run: false,
     };
 
@@ -528,6 +646,7 @@ fn parse_arguments() -> Result<Options, String> {
         "simulate" => options.mode = Mode::Simulate,
         "listen" => options.mode = Mode::Listen,
         "devices" => options.mode = Mode::Devices,
+        "latency" => options.mode = Mode::Latency,
         "gen" => {
             let path = arguments
                 .next()
@@ -572,6 +691,7 @@ fn parse_arguments() -> Result<Options, String> {
                 options.sample_rate = value()?.parse().map_err(|_| "bad --rate".to_string())?
             }
             "--device" => options.device = Some(value()?),
+            "--out-device" => options.out_device = Some(value()?),
             "--dry-run" => options.dry_run = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -581,7 +701,8 @@ fn parse_arguments() -> Result<Options, String> {
         }
     }
 
-    if options.cues.as_os_str().is_empty() && !matches!(options.mode, Mode::Gen(_) | Mode::Devices)
+    if options.cues.as_os_str().is_empty()
+        && !matches!(options.mode, Mode::Gen(_) | Mode::Devices | Mode::Latency)
     {
         return Err(format!("--cues is required\n\n{USAGE}"));
     }

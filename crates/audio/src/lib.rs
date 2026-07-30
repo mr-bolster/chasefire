@@ -8,7 +8,10 @@
 //! never blocks and never allocates, because the audio thread cannot afford
 //! either.
 
+pub mod generator;
 pub mod queue;
+
+pub use generator::Generator;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
@@ -140,6 +143,11 @@ struct Shared {
     samples: AtomicU64,
     /// Times the callback found the queue full — nobody is collecting frames.
     overruns: AtomicU64,
+    /// Nanoseconds between a sample being captured and the callback that
+    /// carries it running. This is the delay the driver itself admits to, and
+    /// it is per-device — which is what makes automatic offset calibration
+    /// possible without asking anyone to patch a cable.
+    input_latency_nanos: AtomicU64,
 }
 
 /// A live LTC input.
@@ -193,6 +201,7 @@ impl Capture {
             level_bits: AtomicU32::new(0),
             samples: AtomicU64::new(0),
             overruns: AtomicU64::new(0),
+            input_latency_nanos: AtomicU64::new(0),
         });
 
         let mut decoder = match nominal_fps {
@@ -204,7 +213,13 @@ impl Capture {
         // no formatting, no logging. Decode, publish, return.
         let callback_shared = Arc::clone(&shared);
         let mut envelope = 0.0f32;
-        let mut process = move |samples: &[f32]| {
+        let mut process = move |samples: &[f32], info: &cpal::InputCallbackInfo| {
+            let timestamp = info.timestamp();
+            if let Some(delay) = timestamp.callback.duration_since(&timestamp.capture) {
+                callback_shared
+                    .input_latency_nanos
+                    .store(delay.as_nanos() as u64, Ordering::Relaxed);
+            }
             let mut count = 0u64;
             for frame in samples.chunks(channels) {
                 let Some(&sample) = frame.get(offset) else {
@@ -241,7 +256,7 @@ impl Capture {
         let stream = match format {
             SampleFormat::F32 => device.build_input_stream(
                 &config,
-                move |data: &[f32], _| process(data),
+                move |data: &[f32], info| process(data, info),
                 on_error,
                 None,
             ),
@@ -249,7 +264,7 @@ impl Capture {
                 let mut scratch = vec![0.0f32; 4096];
                 device.build_input_stream(
                     &config,
-                    move |data: &[i16], _| {
+                    move |data: &[i16], info| {
                         // Converting in place into a buffer sized once, up
                         // front: no allocation happens here.
                         if scratch.len() < data.len() {
@@ -258,7 +273,7 @@ impl Capture {
                         for (destination, &source) in scratch.iter_mut().zip(data) {
                             *destination = source as f32 / 32_768.0;
                         }
-                        process(&scratch[..data.len()]);
+                        process(&scratch[..data.len()], info);
                     },
                     on_error,
                     None,
@@ -268,14 +283,14 @@ impl Capture {
                 let mut scratch = vec![0.0f32; 4096];
                 device.build_input_stream(
                     &config,
-                    move |data: &[u16], _| {
+                    move |data: &[u16], info| {
                         if scratch.len() < data.len() {
                             scratch.resize(data.len(), 0.0);
                         }
                         for (destination, &source) in scratch.iter_mut().zip(data) {
                             *destination = (source as f32 - 32_768.0) / 32_768.0;
                         }
-                        process(&scratch[..data.len()]);
+                        process(&scratch[..data.len()], info);
                     },
                     on_error,
                     None,
@@ -332,6 +347,14 @@ impl Capture {
     /// and the only honest way to know how much time has really passed.
     pub fn samples_processed(&self) -> u64 {
         self.shared.samples.load(Ordering::Relaxed)
+    }
+
+    /// What the driver says the input path costs, in milliseconds.
+    ///
+    /// Zero means the backend does not report it — some do not, and an honest
+    /// zero is better than a number made up to look tidy.
+    pub fn input_latency_ms(&self) -> f64 {
+        self.shared.input_latency_nanos.load(Ordering::Relaxed) as f64 / 1.0e6
     }
 
     /// Frames thrown away because the main loop was not collecting them.
