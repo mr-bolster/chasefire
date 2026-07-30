@@ -119,6 +119,48 @@ pub struct DecodedFrame {
     pub end_sample: u64,
 }
 
+/// The frame rates worth snapping a measurement to.
+pub const KNOWN_FRAME_RATES: [f64; 8] = [
+    24_000.0 / 1001.0,
+    24.0,
+    25.0,
+    30_000.0 / 1001.0,
+    30.0,
+    50.0,
+    60_000.0 / 1001.0,
+    60.0,
+];
+
+/// Round a measured rate to the closest rate anyone actually uses, when it is
+/// close enough to be that rate rather than a bad measurement.
+///
+/// Note what this cannot do: 30 and 29.97 are one part in a thousand apart, as
+/// are 24 and 23.98. No measurement of a sound card's output separates those
+/// reliably — the card's own clock error is the same size. Happily it does not
+/// matter for firing cues, because both members of each pair count their frames
+/// identically; see [`Timecode::advance_one_frame`]. Where it does matter —
+/// generating, and what the screen says — ask the operator.
+pub fn snap_to_known_frame_rate(measured: f64) -> Option<f64> {
+    KNOWN_FRAME_RATES
+        .iter()
+        .copied()
+        .filter(|rate| (measured - rate).abs() / rate < 0.02)
+        .min_by(|left, right| {
+            let distance = |rate: &f64| (measured - rate).abs();
+            distance(left).total_cmp(&distance(right))
+        })
+}
+
+/// How the decoder is getting its bit period.
+enum Lock {
+    /// Measuring the incoming signal before trusting it. Only used when the
+    /// decoder was built without being told the frame rate.
+    Searching {
+        intervals: Vec<u32>,
+    },
+    Locked,
+}
+
 /// Streaming LTC decoder.
 ///
 /// Push samples in, get frames out. It tracks the bit period as it goes, so it
@@ -141,6 +183,7 @@ pub struct Decoder {
     // has to wait here until we see its other half.
     pending_half: Option<u32>,
 
+    lock: Lock,
     register: u128,
     bits_filled: u32,
     sample_index: u64,
@@ -163,11 +206,36 @@ impl Decoder {
             is_high: false,
             samples_since_edge: 0,
             pending_half: None,
+            lock: Lock::Locked,
             register: 0,
             bits_filled: 0,
             sample_index: 0,
             samples_since_frame: 0,
         }
+    }
+
+    /// Work the frame rate out from the signal instead of being told it.
+    ///
+    /// This is the constructor the application should use. An operator plugging
+    /// a cable into a strange rig does not know what is coming down it, and
+    /// should not have to: the bit period is right there in the waveform.
+    pub fn detecting(sample_rate: f64) -> Self {
+        // The nominal only seeds the sanity limits; measurement replaces it.
+        let mut decoder = Self::new(sample_rate, 30.0);
+        decoder.lock = Lock::Searching {
+            intervals: Vec::with_capacity(BOOTSTRAP_INTERVALS),
+        };
+        decoder
+    }
+
+    /// The frame rate measured from the signal, snapped to a real one when it
+    /// is close enough. `None` while still searching, or when what is arriving
+    /// is not a rate anybody uses.
+    pub fn detected_frame_rate(&self) -> Option<f64> {
+        if matches!(self.lock, Lock::Searching { .. }) {
+            return None;
+        }
+        snap_to_known_frame_rate(self.estimated_fps())
     }
 
     /// Throw away any partially received frame and go back to the nominal rate.
@@ -240,6 +308,26 @@ impl Decoder {
 
     /// Turn the gap between two transitions into a bit, biphase-mark style.
     fn classify_interval(&mut self, interval: u32) -> Option<DecodedFrame> {
+        if let Lock::Searching { intervals } = &mut self.lock {
+            intervals.push(interval);
+            if intervals.len() < BOOTSTRAP_INTERVALS {
+                return None;
+            }
+            match estimate_bit_period(intervals) {
+                Some(period) => {
+                    self.bit_period = period;
+                    self.nominal_bit_period = period;
+                    self.lock = Lock::Locked;
+                }
+                None => {
+                    // Nothing sensible in there. Drop the oldest half and keep
+                    // listening rather than locking onto noise.
+                    intervals.drain(..BOOTSTRAP_INTERVALS / 2);
+                }
+            }
+            return None;
+        }
+
         let short_limit = self.bit_period * 0.75;
         let interval_f = interval as f64;
 
@@ -322,6 +410,55 @@ impl Decoder {
     pub fn samples_since_last_frame(&self) -> u64 {
         self.samples_since_frame
     }
+}
+
+/// How many transitions to measure before trusting a rate. Two frames' worth:
+/// enough for both a long and a short interval to show up many times over.
+const BOOTSTRAP_INTERVALS: usize = 160;
+
+/// Work out the bit period from a pile of raw transition intervals.
+///
+/// A biphase signal only ever produces two lengths: one bit cell for a `0`, and
+/// half of one for each half of a `1`. So the intervals fall into two clusters
+/// whose centres are a factor of two apart. Split them with a two-means pass —
+/// no assumption about which is more common, which matters because that depends
+/// entirely on the timecode value being sent.
+fn estimate_bit_period(intervals: &[u32]) -> Option<f64> {
+    let smallest = *intervals.iter().min()? as f64;
+    let largest = *intervals.iter().max()? as f64;
+    if largest < smallest * 1.4 {
+        // Only one cluster: not biphase, or we caught a run of identical bits.
+        return None;
+    }
+
+    let (mut short_centre, mut long_centre) = (smallest, largest);
+    for _ in 0..12 {
+        let (mut short_sum, mut short_count) = (0.0, 0usize);
+        let (mut long_sum, mut long_count) = (0.0, 0usize);
+        for &interval in intervals {
+            let value = interval as f64;
+            if (value - short_centre).abs() <= (value - long_centre).abs() {
+                short_sum += value;
+                short_count += 1;
+            } else {
+                long_sum += value;
+                long_count += 1;
+            }
+        }
+        if short_count == 0 || long_count == 0 {
+            return None;
+        }
+        short_centre = short_sum / short_count as f64;
+        long_centre = long_sum / long_count as f64;
+    }
+
+    // The two clusters must really be a half and a whole bit cell. Anything
+    // else means we are looking at something that is not LTC.
+    let ratio = long_centre / short_centre;
+    if !(1.6..=2.4).contains(&ratio) {
+        return None;
+    }
+    Some(long_centre)
 }
 
 fn field(payload: u128, start: u32, len: u32) -> u32 {
@@ -632,6 +769,104 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn works_out_the_frame_rate_without_being_told() {
+        // The point of the whole exercise: plug a cable into an unknown rig and
+        // have the software figure out what is coming down it.
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+            for (nominal, fps) in [
+                (24u8, 24.0),
+                (25, 25.0),
+                (30, 30.0),
+                (30, 30_000.0 / 1001.0),
+                (50, 50.0),
+                (60, 60.0),
+            ] {
+                let mut audio = Vec::new();
+                let expected = Encoder::new().encode_sequence(
+                    Sequence {
+                        start: Timecode::new(9, 30, 15, 0),
+                        count: 20,
+                        nominal_fps: nominal,
+                        fps,
+                        sample_rate,
+                        amplitude: 0.4,
+                    },
+                    &mut audio,
+                );
+
+                let mut decoder = Decoder::detecting(sample_rate);
+                let mut decoded = Vec::new();
+                decoder.push_samples(&audio, &mut decoded);
+
+                let detected = decoder
+                    .detected_frame_rate()
+                    .unwrap_or_else(|| panic!("{sample_rate} Hz at {fps} fps: never locked on"));
+                assert!(
+                    (detected - fps).abs() / fps < 0.02,
+                    "{sample_rate} Hz: {fps} fps came out as {detected}"
+                );
+                assert!(
+                    !decoded.is_empty(),
+                    "{sample_rate} Hz at {fps} fps: locked but decoded nothing"
+                );
+                for frame in &decoded {
+                    assert!(
+                        expected.contains(&frame.timecode),
+                        "{sample_rate} Hz at {fps} fps: wrong value {}",
+                        frame.timecode
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_ntsc_pairs_cannot_be_told_apart_but_count_the_same() {
+        // Pinned deliberately. 30 and 29.97 differ by a thousandth, which is
+        // smaller than the clock error of the sound card carrying them, so any
+        // claim to distinguish them by measurement is a lie. What saves us is
+        // that both count 0..29, so a cue lands in the same place either way.
+        for (fast, slow) in [(30.0, 30_000.0 / 1001.0), (24.0, 24_000.0 / 1001.0)] {
+            assert!(
+                (fast - slow) / fast < 0.002,
+                "these rates are supposed to be nearly identical"
+            );
+            assert_eq!(
+                fast.ceil() as u8,
+                slow.ceil() as u8,
+                "but they must count identically"
+            );
+        }
+
+        // A clean measurement still snaps to the nearer of the two.
+        assert_eq!(snap_to_known_frame_rate(30.0), Some(30.0));
+        assert_eq!(snap_to_known_frame_rate(25.01), Some(25.0));
+        assert_eq!(snap_to_known_frame_rate(37.0), None);
+    }
+
+    #[test]
+    fn refuses_to_lock_onto_something_that_is_not_timecode() {
+        // Music, hiss, an unplugged input: it must report nothing rather than
+        // invent a frame rate and start firing cues off it.
+        let mut seed = 0x9E3779B9u32;
+        let noise: Vec<f32> = (0..48_000 * 2)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / 8_388_608.0 - 1.0
+            })
+            .collect();
+
+        let mut decoder = Decoder::detecting(48_000.0);
+        let mut decoded = Vec::new();
+        decoder.push_samples(&noise, &mut decoded);
+        assert!(
+            decoded.is_empty(),
+            "decoded {} frames of noise",
+            decoded.len()
+        );
     }
 
     #[test]

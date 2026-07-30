@@ -28,7 +28,9 @@ MODES:
 OPTIONS:
     --cues <file>     Cue list, JSON (required)
     --osc <host:port> Where to send OSC            [default: 127.0.0.1:7000]
-    --fps <n>         24, 25, 29.97, 30, 50, 59.94 [default: 25]
+    --fps <n>         24, 25, 29.97, 30, 50, 59.94.
+                      Left out, wav mode works it
+                      out from the signal itself
     --from <tc>       Start timecode; write it with a
                       semicolon (10:00:00;00) for drop
                       frame numbering    [default: 10:00:00:00]
@@ -49,6 +51,8 @@ struct Options {
     fps: f64,
     /// The rate the numbers are counted at: 30 for 29.97.
     nominal_fps: u8,
+    /// False means "nobody told us, go and measure it".
+    fps_given: bool,
     from: Timecode,
     offset: i32,
     channel: usize,
@@ -209,12 +213,34 @@ fn decode_wav(
         .filter_map(|frame| frame.get(channel).copied())
         .collect();
 
-    let mut decoder = Decoder::new(sample_rate as f64, options.fps);
+    let mut decoder = if options.fps_given {
+        Decoder::new(sample_rate as f64, options.fps)
+    } else {
+        Decoder::detecting(sample_rate as f64)
+    };
     let mut frames = Vec::new();
     decoder.push_samples(&mono, &mut frames);
 
     if frames.is_empty() {
         return Err("no LTC found — wrong channel, or the level is too low".into());
+    }
+
+    if !options.fps_given {
+        match decoder.detected_frame_rate() {
+            Some(rate) => {
+                let nominal = rate.ceil() as u8;
+                println!("Detected {rate:.2} fps — counting at {nominal}");
+                engine.set_nominal_fps(nominal);
+            }
+            // It decoded frames but the rate is not one anybody uses. Say so
+            // rather than quietly counting at whatever the default was.
+            None => println!(
+                "Warning: measured {:.2} fps, which is not a standard rate. \
+                 Counting at {}; pass --fps to override.",
+                decoder.estimated_fps(),
+                engine.nominal_fps()
+            ),
+        }
     }
 
     println!(
@@ -289,6 +315,7 @@ fn parse_arguments() -> Result<Options, String> {
         osc: "127.0.0.1:7000".into(),
         fps: 25.0,
         nominal_fps: 25,
+        fps_given: false,
         from: Timecode::new(10, 0, 0, 0),
         offset: 0,
         channel: 1,
@@ -332,6 +359,7 @@ fn parse_arguments() -> Result<Options, String> {
                 let (fps, nominal) = parse_frame_rate(&value()?)?;
                 options.fps = fps;
                 options.nominal_fps = nominal;
+                options.fps_given = true;
             }
             "--from" => options.from = parse_timecode(&value()?)?,
             "--offset" => {

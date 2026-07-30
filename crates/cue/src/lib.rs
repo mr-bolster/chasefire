@@ -145,6 +145,19 @@ impl Engine {
         self.armed
     }
 
+    /// Change the counting rate — after auto-detection, or when the operator
+    /// picks a different one. Position is forgotten, so the next update
+    /// re-syncs instead of firing everything between the two interpretations.
+    pub fn set_nominal_fps(&mut self, nominal_fps: u8) {
+        self.nominal_fps = nominal_fps;
+        self.seek_threshold_frames = (nominal_fps as i64 * 2) / 3;
+        self.last_position = None;
+    }
+
+    pub fn nominal_fps(&self) -> u8 {
+        self.nominal_fps
+    }
+
     pub fn set_cues(&mut self, cues: Vec<Cue>) {
         self.armed_states = vec![true; cues.len()];
         self.cues = cues;
