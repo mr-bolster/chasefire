@@ -1,0 +1,11 @@
+[package]
+name = "ltc"
+description = "SMPTE Linear Timecode (LTC) decoder and encoder, free of any I/O"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]

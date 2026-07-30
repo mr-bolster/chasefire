@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Show files and captures used while testing, never committed
+/scratch
+*.wav
