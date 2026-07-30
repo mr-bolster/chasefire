@@ -829,7 +829,7 @@ mod tests {
         // smaller than the clock error of the sound card carrying them, so any
         // claim to distinguish them by measurement is a lie. What saves us is
         // that both count 0..29, so a cue lands in the same place either way.
-        for (fast, slow) in [(30.0, 30_000.0 / 1001.0), (24.0, 24_000.0 / 1001.0)] {
+        for (fast, slow) in [(30.0f64, 30_000.0 / 1001.0), (24.0f64, 24_000.0 / 1001.0)] {
             assert!(
                 (fast - slow) / fast < 0.002,
                 "these rates are supposed to be nearly identical"
