@@ -189,6 +189,10 @@ pub struct Decoder {
     pending_half: Option<u32>,
 
     lock: Lock,
+    /// True when the rate came from measurement rather than from being told.
+    /// Only a self-taught lock is allowed to give up and start over.
+    auto_detect: bool,
+    samples_since_lock: u64,
     parity_checked: u32,
     parity_failed: u32,
     rejected_frames: u32,
@@ -215,6 +219,8 @@ impl Decoder {
             samples_since_edge: 0,
             pending_half: None,
             lock: Lock::Locked,
+            auto_detect: false,
+            samples_since_lock: 0,
             parity_checked: 0,
             parity_failed: 0,
             rejected_frames: 0,
@@ -236,6 +242,7 @@ impl Decoder {
         decoder.lock = Lock::Searching {
             intervals: Vec::with_capacity(BOOTSTRAP_INTERVALS),
         };
+        decoder.auto_detect = true;
         decoder
     }
 
@@ -272,6 +279,24 @@ impl Decoder {
     pub fn push_sample(&mut self, sample: f32) -> Option<DecodedFrame> {
         self.sample_index += 1;
         self.samples_since_frame += 1;
+
+        // A lock that produces no frames is not a lock. Give up on it and
+        // measure again rather than sitting deaf on a bad estimate — the case
+        // that matters is opening the input before the timecode starts, which
+        // is how anyone actually plugs in.
+        if self.auto_detect && matches!(self.lock, Lock::Locked) {
+            self.samples_since_lock += 1;
+            if self.samples_since_frame > (self.sample_rate * 1.5) as u64
+                && self.samples_since_lock > (self.sample_rate * 1.5) as u64
+            {
+                self.lock = Lock::Searching {
+                    intervals: Vec::with_capacity(BOOTSTRAP_INTERVALS),
+                };
+                self.samples_since_lock = 0;
+                self.bits_filled = 0;
+                self.pending_half = None;
+            }
+        }
         self.samples_since_edge = self.samples_since_edge.saturating_add(1);
 
         // Strip any DC offset the interface may add; LTC is symmetric about
@@ -324,11 +349,12 @@ impl Decoder {
             if intervals.len() < BOOTSTRAP_INTERVALS {
                 return None;
             }
-            match estimate_bit_period(intervals) {
+            match estimate_bit_period(intervals, self.sample_rate) {
                 Some(period) => {
                     self.bit_period = period;
                     self.nominal_bit_period = period;
                     self.lock = Lock::Locked;
+                    self.samples_since_lock = 0;
                 }
                 None => {
                     // Nothing sensible in there. Drop the oldest half and keep
@@ -459,7 +485,7 @@ const BOOTSTRAP_INTERVALS: usize = 160;
 /// whose centres are a factor of two apart. Split them with a two-means pass —
 /// no assumption about which is more common, which matters because that depends
 /// entirely on the timecode value being sent.
-fn estimate_bit_period(intervals: &[u32]) -> Option<f64> {
+fn estimate_bit_period(intervals: &[u32], sample_rate: f64) -> Option<f64> {
     let smallest = *intervals.iter().min()? as f64;
     let largest = *intervals.iter().max()? as f64;
     if largest < smallest * 1.4 {
@@ -492,6 +518,16 @@ fn estimate_bit_period(intervals: &[u32]) -> Option<f64> {
     // else means we are looking at something that is not LTC.
     let ratio = long_centre / short_centre;
     if !(1.6..=2.4).contains(&ratio) {
+        return None;
+    }
+
+    // And the answer has to be a frame rate that exists. Noise can produce two
+    // clusters a factor of two apart by chance; noise cannot produce them at a
+    // believable LTC bit rate. Without this check the decoder can lock onto
+    // silence before the show starts and then stay deaf to the real signal,
+    // because the tracking guard refuses to move far from a locked estimate.
+    let implied_fps = sample_rate / (FRAME_BITS as f64 * long_centre);
+    if !(23.0..=61.0).contains(&implied_fps) {
         return None;
     }
     Some(long_centre)
@@ -932,6 +968,70 @@ mod tests {
         assert_eq!(snap_to_known_frame_rate(30.0), Some(30.0));
         assert_eq!(snap_to_known_frame_rate(25.01), Some(25.0));
         assert_eq!(snap_to_known_frame_rate(37.0), None);
+    }
+
+    #[test]
+    fn locks_on_after_listening_to_noise_first() {
+        // The way anyone actually plugs in: open the input, wait, and only then
+        // does the timecode start. A first version of the auto-detection could
+        // lock its bit period onto the noise and then stay deaf for ever,
+        // because the tracking guard refuses to move far from a locked
+        // estimate. Found on a real rig, not in a test — hence this test.
+        let mut audio = Vec::new();
+        let mut seed = 0x5EED_1234u32;
+        for _ in 0..(48_000 * 2) {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            audio.push(((seed >> 8) as f32 / 8_388_608.0 - 1.0) * 0.02);
+        }
+
+        let expected = Encoder::new().encode_sequence(
+            sequence(Timecode::new(10, 0, 0, 0), 60, 25, 25.0),
+            &mut audio,
+        );
+
+        let mut decoder = Decoder::detecting(48_000.0);
+        let mut decoded = Vec::new();
+        decoder.push_samples(&audio, &mut decoded);
+
+        assert!(
+            decoded.len() > expected.len() / 2,
+            "only {} of {} frames decoded after a noisy start",
+            decoded.len(),
+            expected.len()
+        );
+        for frame in &decoded {
+            assert!(expected.contains(&frame.timecode));
+        }
+    }
+
+    #[test]
+    fn a_lock_that_never_produces_a_frame_is_abandoned() {
+        // Same failure from the other side: force a bad lock by handing it a
+        // signal, then silence, then a *different* rate. It has to re-measure.
+        let mut audio = Vec::new();
+        Encoder::new().encode_sequence(
+            sequence(Timecode::new(1, 0, 0, 0), 25, 25, 25.0),
+            &mut audio,
+        );
+        audio.extend(std::iter::repeat_n(0.0f32, 48_000 * 2));
+        let expected = Encoder::new().encode_sequence(
+            sequence(Timecode::new(2, 0, 0, 0), 60, 30, 30.0),
+            &mut audio,
+        );
+
+        let mut decoder = Decoder::detecting(48_000.0);
+        let mut decoded = Vec::new();
+        decoder.push_samples(&audio, &mut decoded);
+
+        let at_new_rate: Vec<_> = decoded
+            .iter()
+            .filter(|frame| expected.contains(&frame.timecode))
+            .collect();
+        assert!(
+            at_new_rate.len() > 20,
+            "only {} frames at the new rate — the old lock was never released",
+            at_new_rate.len()
+        );
     }
 
     #[test]

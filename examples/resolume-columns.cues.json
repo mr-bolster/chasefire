@@ -1,36 +1,36 @@
 [
   {
     "id": 1,
-    "name": "Column 1",
+    "name": "Column 1 (all layers)",
     "at": { "hours": 10, "minutes": 0, "seconds": 5, "frames": 0, "drop_frame": false },
     "enabled": true,
     "action": {
       "Osc": {
-        "address": "/composition/layers/1/clips/1/connect",
+        "address": "/composition/columns/1/connect",
         "args": [{ "Int": 1 }]
       }
     }
   },
   {
     "id": 2,
-    "name": "Column 2",
+    "name": "Column 2 (all layers)",
     "at": { "hours": 10, "minutes": 0, "seconds": 8, "frames": 0, "drop_frame": false },
     "enabled": true,
     "action": {
       "Osc": {
-        "address": "/composition/layers/1/clips/2/connect",
+        "address": "/composition/columns/2/connect",
         "args": [{ "Int": 1 }]
       }
     }
   },
   {
     "id": 3,
-    "name": "Column 3",
+    "name": "Column 3 (all layers)",
     "at": { "hours": 10, "minutes": 0, "seconds": 11, "frames": 0, "drop_frame": false },
     "enabled": true,
     "action": {
       "Osc": {
-        "address": "/composition/layers/1/clips/3/connect",
+        "address": "/composition/columns/3/connect",
         "args": [{ "Int": 1 }]
       }
     }
