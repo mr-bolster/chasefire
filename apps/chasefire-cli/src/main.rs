@@ -28,8 +28,10 @@ MODES:
 OPTIONS:
     --cues <file>     Cue list, JSON (required)
     --osc <host:port> Where to send OSC            [default: 127.0.0.1:7000]
-    --fps <n>         Frame rate: 24, 25, 30       [default: 25]
-    --from <tc>       Start timecode, simulate only [default: 10:00:00:00]
+    --fps <n>         24, 25, 29.97, 30, 50, 59.94 [default: 25]
+    --from <tc>       Start timecode; write it with a
+                      semicolon (10:00:00;00) for drop
+                      frame numbering    [default: 10:00:00:00]
     --offset <n>      Fire n frames early          [default: 0]
     --channel <n>     WAV channel holding the LTC  [default: 1]
     --seconds <n>     Length for gen               [default: 30]
@@ -41,7 +43,10 @@ struct Options {
     mode: Mode,
     cues: PathBuf,
     osc: String,
-    fps: u8,
+    /// The rate the audio really runs at: 30000/1001 for 29.97.
+    fps: f64,
+    /// The rate the numbers are counted at: 30 for 29.97.
+    nominal_fps: u8,
     from: Timecode,
     offset: i32,
     channel: usize,
@@ -72,7 +77,7 @@ fn run() -> Result<(), String> {
     let cues = load_cues(&options.cues)?;
     println!("Loaded {} cues from {}", cues.len(), options.cues.display());
 
-    let mut engine = Engine::new(options.fps);
+    let mut engine = Engine::new(options.nominal_fps);
     engine.set_cues(cues);
     engine.set_offset_frames(options.offset);
     engine.set_armed(true);
@@ -97,15 +102,15 @@ fn run() -> Result<(), String> {
 /// Write a WAV of clean LTC: a test signal for this tool and for anything else.
 fn generate_wav(options: &Options, path: &PathBuf) -> Result<(), String> {
     let sample_rate = 48_000.0;
-    let frames = options.seconds * options.fps as u32;
+    let frames = (options.seconds as f64 * options.fps).round() as u32;
 
     let mut audio = Vec::new();
     ltc::Encoder::new().encode_sequence(
         ltc::Sequence {
             start: options.from,
             count: frames,
-            nominal_fps: options.fps,
-            fps: options.fps as f64,
+            nominal_fps: options.nominal_fps,
+            fps: options.fps,
             sample_rate,
             amplitude: 0.5,
         },
@@ -130,7 +135,7 @@ fn generate_wav(options: &Options, path: &PathBuf) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
 
     println!(
-        "Wrote {} — {} s of {} fps LTC from {}",
+        "Wrote {} — {} s of {:.2} fps LTC from {}",
         path.display(),
         options.seconds,
         options.fps,
@@ -146,11 +151,11 @@ fn simulate(
     options: &Options,
 ) -> Result<(), String> {
     println!(
-        "Simulating {} fps from {}. Ctrl-C to stop.",
+        "Simulating {:.2} fps from {}. Ctrl-C to stop.",
         options.fps, options.from
     );
 
-    let frame_duration = Duration::from_secs_f64(1.0 / options.fps as f64);
+    let frame_duration = Duration::from_secs_f64(1.0 / options.fps);
     let started = Instant::now();
     let mut timecode = options.from;
     let mut elapsed_frames: u32 = 0;
@@ -161,7 +166,7 @@ fn simulate(
         }
 
         elapsed_frames += 1;
-        timecode.advance_one_frame(options.fps);
+        timecode.advance_one_frame(options.nominal_fps);
 
         // Sleep against the wall clock rather than accumulating drift by adding
         // up sleeps that are each a fraction of a millisecond too long.
@@ -200,7 +205,7 @@ fn decode_wav(
         .filter_map(|frame| frame.get(channel).copied())
         .collect();
 
-    let mut decoder = Decoder::new(sample_rate as f64, options.fps as f64);
+    let mut decoder = Decoder::new(sample_rate as f64, options.fps);
     let mut frames = Vec::new();
     decoder.push_samples(&mono, &mut frames);
 
@@ -278,7 +283,8 @@ fn parse_arguments() -> Result<Options, String> {
         mode: Mode::Simulate,
         cues: PathBuf::new(),
         osc: "127.0.0.1:7000".into(),
-        fps: 25,
+        fps: 25.0,
+        nominal_fps: 25,
         from: Timecode::new(10, 0, 0, 0),
         offset: 0,
         channel: 1,
@@ -317,7 +323,11 @@ fn parse_arguments() -> Result<Options, String> {
         match flag.as_str() {
             "--cues" => options.cues = PathBuf::from(value()?),
             "--osc" => options.osc = value()?,
-            "--fps" => options.fps = value()?.parse().map_err(|_| "bad --fps".to_string())?,
+            "--fps" => {
+                let (fps, nominal) = parse_frame_rate(&value()?)?;
+                options.fps = fps;
+                options.nominal_fps = nominal;
+            }
             "--from" => options.from = parse_timecode(&value()?)?,
             "--offset" => {
                 options.offset = value()?.parse().map_err(|_| "bad --offset".to_string())?
@@ -341,6 +351,23 @@ fn parse_arguments() -> Result<Options, String> {
         return Err(format!("--cues is required\n\n{USAGE}"));
     }
     Ok(options)
+}
+
+/// Accept the rates the trade actually says out loud, and work out both the
+/// real rate and the counting rate from each. They only differ for the NTSC
+/// ones, which is the whole reason drop-frame exists.
+fn parse_frame_rate(text: &str) -> Result<(f64, u8), String> {
+    Ok(match text {
+        "23.98" | "23.976" => (24_000.0 / 1001.0, 24),
+        "24" => (24.0, 24),
+        "25" => (25.0, 25),
+        "29.97" => (30_000.0 / 1001.0, 30),
+        "30" => (30.0, 30),
+        "50" => (50.0, 50),
+        "59.94" => (60_000.0 / 1001.0, 60),
+        "60" => (60.0, 60),
+        other => return Err(format!("'{other}' is not a frame rate I know")),
+    })
 }
 
 fn parse_timecode(text: &str) -> Result<Timecode, String> {

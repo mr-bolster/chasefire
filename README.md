@@ -24,7 +24,7 @@ media server, and watch it fire.
 ```bash
 cargo build --release
 
-# 25 seconds of 25 fps LTC to play with
+# 25 seconds of 25 fps LTC to play with (--fps also takes 23.98, 29.97, 59.94)
 ./target/release/chasefire-cli gen test.wav --from 10:00:00:00 --fps 25 --seconds 25
 
 # Decode it and fire the example cues at Resolume on this machine
