@@ -193,6 +193,13 @@ pub struct Decoder {
     /// Only a self-taught lock is allowed to give up and start over.
     auto_detect: bool,
     samples_since_lock: u64,
+    /// Frames actually decoded at the current lock. Zero means the rate we
+    /// settled on has not proved itself yet.
+    frames_at_this_lock: u32,
+    /// How many times we have had to go back and measure again. Worth showing
+    /// an operator: a number that keeps climbing means the signal is not what
+    /// the cable says it is.
+    detection_attempts: u32,
     parity_checked: u32,
     parity_failed: u32,
     rejected_frames: u32,
@@ -221,6 +228,8 @@ impl Decoder {
             lock: Lock::Locked,
             auto_detect: false,
             samples_since_lock: 0,
+            frames_at_this_lock: 0,
+            detection_attempts: 0,
             parity_checked: 0,
             parity_failed: 0,
             rejected_frames: 0,
@@ -284,17 +293,22 @@ impl Decoder {
         // measure again rather than sitting deaf on a bad estimate — the case
         // that matters is opening the input before the timecode starts, which
         // is how anyone actually plugs in.
+        //
+        // How long to wait depends on whether this lock has ever worked.
+        // An unproven one gets three frames: if the rate were right, a frame
+        // would have come out by now, so keep re-measuring rather than sitting
+        // there deaf. Better to detect five times over than to never start.
+        // A lock that has decoded frames has earned patience — a dropout is not
+        // a reason to throw away a rate we know is correct.
         if self.auto_detect && matches!(self.lock, Lock::Locked) {
             self.samples_since_lock += 1;
-            if self.samples_since_frame > (self.sample_rate * 1.5) as u64
-                && self.samples_since_lock > (self.sample_rate * 1.5) as u64
-            {
-                self.lock = Lock::Searching {
-                    intervals: Vec::with_capacity(BOOTSTRAP_INTERVALS),
-                };
-                self.samples_since_lock = 0;
-                self.bits_filled = 0;
-                self.pending_half = None;
+            let patience = if self.frames_at_this_lock == 0 {
+                (self.bit_period * FRAME_BITS as f64 * 3.0) as u64
+            } else {
+                (self.sample_rate * 2.0) as u64
+            };
+            if self.samples_since_frame > patience && self.samples_since_lock > patience {
+                self.start_searching();
             }
         }
         self.samples_since_edge = self.samples_since_edge.saturating_add(1);
@@ -355,6 +369,7 @@ impl Decoder {
                     self.nominal_bit_period = period;
                     self.lock = Lock::Locked;
                     self.samples_since_lock = 0;
+                    self.frames_at_this_lock = 0;
                 }
                 None => {
                     // Nothing sensible in there. Drop the oldest half and keep
@@ -433,6 +448,7 @@ impl Decoder {
 
         let estimated_fps = (self.sample_rate / (FRAME_BITS as f64 * self.bit_period)) as f32;
         self.samples_since_frame = 0;
+        self.frames_at_this_lock = self.frames_at_this_lock.saturating_add(1);
 
         Some(DecodedFrame {
             timecode,
@@ -447,6 +463,23 @@ impl Decoder {
     /// Best current estimate of the incoming frame rate.
     pub fn estimated_fps(&self) -> f64 {
         self.sample_rate / (FRAME_BITS as f64 * self.bit_period)
+    }
+
+    /// Throw the current rate away and start measuring again.
+    fn start_searching(&mut self) {
+        self.lock = Lock::Searching {
+            intervals: Vec::with_capacity(BOOTSTRAP_INTERVALS),
+        };
+        self.samples_since_lock = 0;
+        self.frames_at_this_lock = 0;
+        self.bits_filled = 0;
+        self.pending_half = None;
+        self.detection_attempts = self.detection_attempts.saturating_add(1);
+    }
+
+    /// How many times the rate has had to be worked out again from scratch.
+    pub fn detection_attempts(&self) -> u32 {
+        self.detection_attempts
     }
 
     /// Whether this source actually maintains the parity bit.
@@ -1031,6 +1064,100 @@ mod tests {
             at_new_rate.len() > 20,
             "only {} frames at the new rate — the old lock was never released",
             at_new_rate.len()
+        );
+    }
+
+    /// Biphase-mark encode an arbitrary bit pattern. Used to build a signal
+    /// that is convincing enough to lock onto and yet contains no timecode.
+    fn biphase(bits: &[bool], samples_per_bit: f64, out: &mut Vec<f32>) {
+        let mut high = false;
+        for (index, bit) in bits.iter().enumerate() {
+            let start = (index as f64 * samples_per_bit).round() as usize;
+            let middle = ((index as f64 + 0.5) * samples_per_bit).round() as usize;
+            let end = ((index as f64 + 1.0) * samples_per_bit).round() as usize;
+            high = !high;
+            for _ in start..middle {
+                out.push(if high { 0.4 } else { -0.4 });
+            }
+            if *bit {
+                high = !high;
+            }
+            for _ in middle..end {
+                out.push(if high { 0.4 } else { -0.4 });
+            }
+        }
+    }
+
+    #[test]
+    fn gives_up_fast_on_a_lock_that_produces_nothing() {
+        // Leo's rule, in test form: better to detect five times over than to
+        // sit there deaf. This signal has exactly the shape the rate estimator
+        // is looking for — two interval clusters a factor of two apart, at a
+        // believable LTC bit rate — but its bits alternate 0101… for ever, so
+        // the sync word never appears and no frame can ever come out. A
+        // decoder that locks and waits is stuck; this one must keep re-measuring.
+        let samples_per_bit = 48_000.0 / (80.0 * 25.0);
+        let mut audio = Vec::new();
+        let decoy: Vec<bool> = (0..4_000).map(|index| index % 2 == 0).collect();
+        biphase(&decoy, samples_per_bit, &mut audio);
+        let decoy_samples = audio.len();
+
+        let expected = Encoder::new().encode_sequence(
+            sequence(Timecode::new(10, 0, 0, 0), 30, 25, 25.0),
+            &mut audio,
+        );
+
+        let mut decoder = Decoder::detecting(48_000.0);
+        let mut decoded = Vec::new();
+        decoder.push_samples(&audio, &mut decoded);
+
+        assert!(
+            decoder.detection_attempts() > 1,
+            "never went back to measure again: it was sitting on a dead lock"
+        );
+
+        let first = decoded.first().expect("never recovered at all");
+        assert!(
+            expected.contains(&first.timecode),
+            "recovered into nonsense: {}",
+            first.timecode
+        );
+        // And the recovery has to be quick, not eventual.
+        let frames_late = (first.end_sample as usize - decoy_samples) as f64 / (48_000.0 / 25.0);
+        assert!(
+            frames_late < 6.0,
+            "took {frames_late:.1} frames to shake off the false lock"
+        );
+    }
+
+    #[test]
+    fn a_proven_lock_is_not_thrown_away_over_a_short_dropout() {
+        // The other side of the bargain. Once a rate has decoded real frames it
+        // has earned patience: a gap in the signal must not cost the lock, or
+        // every dropout would be followed by a re-detection nobody asked for.
+        let mut audio = Vec::new();
+        Encoder::new().encode_sequence(
+            sequence(Timecode::new(10, 0, 0, 0), 25, 25, 25.0),
+            &mut audio,
+        );
+        audio.extend(std::iter::repeat_n(0.0f32, 48_000 / 2)); // half a second
+        let after = Encoder::new().encode_sequence(
+            sequence(Timecode::new(10, 0, 5, 0), 25, 25, 25.0),
+            &mut audio,
+        );
+
+        let mut decoder = Decoder::detecting(48_000.0);
+        let mut decoded = Vec::new();
+        decoder.push_samples(&audio, &mut decoded);
+
+        assert_eq!(
+            decoder.detection_attempts(),
+            0,
+            "a working lock was thrown away over half a second of silence"
+        );
+        assert!(
+            decoded.iter().any(|frame| after.contains(&frame.timecode)),
+            "did not pick the signal back up"
         );
     }
 

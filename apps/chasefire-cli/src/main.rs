@@ -357,13 +357,19 @@ fn print_status(
         chase::Signal::Lost => "LOST".to_string(),
     };
     let rejections = chaser.rejections();
+    let retries = capture.detection_attempts();
     print!(
-        "\r{}  {level} {quality:<8} {state:<13} pending {:<4} held {:<4} ",
+        "\r{}  {level} {quality:<8} {state:<13} pending {:<4} held {:<4} {:<12}",
         current
             .map(|timecode| timecode.to_string())
             .unwrap_or_else(|| "--:--:--:--".into()),
         engine.pending_count(),
         rejections.broke_continuity,
+        if retries > 0 {
+            format!("re-detect {retries}")
+        } else {
+            String::new()
+        },
     );
     use std::io::Write;
     let _ = std::io::stdout().flush();

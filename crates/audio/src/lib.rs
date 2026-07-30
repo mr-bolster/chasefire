@@ -148,6 +148,9 @@ struct Shared {
     /// it is per-device — which is what makes automatic offset calibration
     /// possible without asking anyone to patch a cable.
     input_latency_nanos: AtomicU64,
+    /// Times the decoder has had to work the frame rate out again. Climbing
+    /// means what is on the cable is not behaving like timecode.
+    detection_attempts: AtomicU32,
 }
 
 /// A live LTC input.
@@ -202,6 +205,7 @@ impl Capture {
             samples: AtomicU64::new(0),
             overruns: AtomicU64::new(0),
             input_latency_nanos: AtomicU64::new(0),
+            detection_attempts: AtomicU32::new(0),
         });
 
         let mut decoder = match nominal_fps {
@@ -244,6 +248,9 @@ impl Capture {
             callback_shared
                 .level_bits
                 .store(envelope.to_bits(), Ordering::Relaxed);
+            callback_shared
+                .detection_attempts
+                .store(decoder.detection_attempts(), Ordering::Relaxed);
             callback_shared.samples.fetch_add(count, Ordering::Relaxed);
         };
 
@@ -347,6 +354,11 @@ impl Capture {
     /// and the only honest way to know how much time has really passed.
     pub fn samples_processed(&self) -> u64 {
         self.shared.samples.load(Ordering::Relaxed)
+    }
+
+    /// Times the frame rate has had to be worked out again from scratch.
+    pub fn detection_attempts(&self) -> u32 {
+        self.shared.detection_attempts.load(Ordering::Relaxed)
     }
 
     /// What the driver says the input path costs, in milliseconds.
