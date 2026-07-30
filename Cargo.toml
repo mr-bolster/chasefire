@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ltc", "crates/cue", "crates/chase", "crates/sink", "apps/chasefire-cli"]
+members = ["crates/ltc", "crates/cue", "crates/chase", "crates/audio", "crates/sink", "apps/chasefire-cli"]
 
 [workspace.package]
 version = "0.1.0"

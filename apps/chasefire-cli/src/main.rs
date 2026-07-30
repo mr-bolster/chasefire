@@ -20,11 +20,15 @@ USAGE:
     chasefire-cli simulate --cues <file> [options]
     chasefire-cli wav <file> --cues <file> [options]
     chasefire-cli gen <file> [options]
+    chasefire-cli listen --cues <file> [options]
+    chasefire-cli devices
 
 MODES:
     simulate          Generate timecode internally, in real time
     wav <file>        Decode LTC from a WAV file as fast as it can
     gen <file>        Write a WAV of LTC to test with (--seconds, --from, --fps)
+    listen            Read LTC live from a sound card and fire cues
+    devices           List the audio inputs this machine has
 
 OPTIONS:
     --cues <file>     Cue list, JSON (required)
@@ -36,7 +40,8 @@ OPTIONS:
                       semicolon (10:00:00;00) for drop
                       frame numbering    [default: 10:00:00:00]
     --offset <n>      Fire n frames early          [default: 0]
-    --channel <n>     WAV channel holding the LTC  [default: 1]
+    --channel <n>     Channel holding the LTC      [default: 1]
+    --device <name>   Input device for listen      [default: system default]
     --seconds <n>     Length for gen               [default: 30]
     --rate <hz>       Sample rate for gen:
                       44100, 48000, 96000          [default: 48000]
@@ -59,10 +64,13 @@ struct Options {
     channel: usize,
     seconds: u32,
     sample_rate: f64,
+    device: Option<String>,
     dry_run: bool,
 }
 
 enum Mode {
+    Listen,
+    Devices,
     Simulate,
     Wav(PathBuf),
     Gen(PathBuf),
@@ -80,6 +88,9 @@ fn run() -> Result<(), String> {
 
     if let Mode::Gen(path) = &options.mode {
         return generate_wav(&options, path);
+    }
+    if matches!(options.mode, Mode::Devices) {
+        return list_devices();
     }
 
     let cues = load_cues(&options.cues)?;
@@ -103,8 +114,142 @@ fn run() -> Result<(), String> {
     match &options.mode {
         Mode::Simulate => simulate(&mut engine, &mut output, &options),
         Mode::Wav(path) => decode_wav(&mut engine, &mut output, &options, path),
-        Mode::Gen(_) => unreachable!("handled above"),
+        Mode::Listen => listen(&mut engine, &mut output, &options),
+        Mode::Gen(_) | Mode::Devices => unreachable!("handled above"),
     }
+}
+
+fn list_devices() -> Result<(), String> {
+    let devices = audio::list_input_devices().map_err(|error| error.to_string())?;
+    println!("Audio inputs:");
+    for device in devices {
+        println!(
+            "  {}{}  ({} ch, {} Hz)",
+            device.name,
+            if device.is_default { "  [default]" } else { "" },
+            device.channels,
+            device.sample_rate
+        );
+    }
+    Ok(())
+}
+
+/// Read timecode live off a sound card and run the show from it.
+fn listen(
+    engine: &mut Engine,
+    output: &mut Option<OscSink>,
+    options: &Options,
+) -> Result<(), String> {
+    let requested_fps = options.fps_given.then_some(options.fps);
+    let capture = audio::Capture::open(options.device.as_deref(), options.channel, requested_fps)
+        .map_err(|error| error.to_string())?;
+
+    println!(
+        "Listening on \"{}\" channel {} at {} Hz{}",
+        capture.device_name(),
+        capture.channel(),
+        capture.sample_rate(),
+        if options.fps_given {
+            format!(", expecting {:.2} fps", options.fps)
+        } else {
+            ", working the frame rate out from the signal".to_string()
+        }
+    );
+    println!("Ctrl-C to stop.\n");
+
+    let mut chaser = Chaser::new(engine.nominal_fps());
+    let mut samples_per_frame = capture.sample_rate() as f64 / options.fps;
+    let mut last_good_sample = capture.samples_processed();
+    let mut freewheel_ticks = 0u64;
+    let mut settled_rate = options.fps_given;
+    let mut last_status = Instant::now();
+    let mut current = None;
+
+    loop {
+        while let Some(frame) = capture.next_frame() {
+            // The first frames tell us the rate; adopt it once and for all.
+            if !settled_rate {
+                if let Some(rate) = ltc::snap_to_known_frame_rate(frame.estimated_fps as f64) {
+                    let nominal = rate.ceil() as u8;
+                    println!("Locked: {rate:.2} fps, counting at {nominal}");
+                    engine.set_nominal_fps(nominal);
+                    chaser.set_nominal_fps(nominal);
+                    samples_per_frame = capture.sample_rate() as f64 / rate;
+                    settled_rate = true;
+                }
+            }
+
+            last_good_sample = capture.samples_processed();
+            freewheel_ticks = 0;
+            if let Some(tick) = chaser.on_frame(&frame) {
+                current = Some(tick.timecode);
+                for firing in engine.update(tick.timecode, tick.reverse) {
+                    report(&firing, output);
+                }
+            }
+        }
+
+        // Nothing arrived: work out from the audio clock how many frames have
+        // gone by, and let the chaser count through them if it is willing.
+        let elapsed = capture.samples_processed().saturating_sub(last_good_sample);
+        let due = (elapsed as f64 / samples_per_frame) as u64;
+        while freewheel_ticks < due {
+            freewheel_ticks += 1;
+            match chaser.on_missing_frame() {
+                Some(tick) => {
+                    current = Some(tick.timecode);
+                    for firing in engine.update(tick.timecode, tick.reverse) {
+                        report(&firing, output);
+                    }
+                }
+                None => engine.signal_lost(),
+            }
+        }
+
+        if last_status.elapsed() >= Duration::from_millis(500) {
+            last_status = Instant::now();
+            print_status(&capture, &chaser, engine, current);
+        }
+
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn print_status(
+    capture: &audio::Capture,
+    chaser: &Chaser,
+    engine: &Engine,
+    current: Option<Timecode>,
+) {
+    let level = match capture.level_dbfs() {
+        Some(dbfs) => format!("{dbfs:>6.1} dBFS"),
+        None => "  silent".to_string(),
+    };
+    // The threshold is measured, not guessed: on a real analogue loop, frames
+    // start coming back corrupted once the signal drops towards the noise.
+    let quality = match capture.level_dbfs() {
+        Some(dbfs) if dbfs > -50.0 => "good",
+        Some(dbfs) if dbfs > -55.0 => "WEAK",
+        Some(_) => "TOO LOW",
+        None => "no signal",
+    };
+    let state = match chaser.signal() {
+        chase::Signal::Searching => "searching".to_string(),
+        chase::Signal::Locked => "locked".to_string(),
+        chase::Signal::Freewheeling { frames } => format!("freewheel {frames}"),
+        chase::Signal::Lost => "LOST".to_string(),
+    };
+    let rejections = chaser.rejections();
+    print!(
+        "\r{}  {level} {quality:<8} {state:<13} pending {:<4} held {:<4} ",
+        current
+            .map(|timecode| timecode.to_string())
+            .unwrap_or_else(|| "--:--:--:--".into()),
+        engine.pending_count(),
+        rejections.broke_continuity,
+    );
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
 }
 
 /// Write a WAV of clean LTC: a test signal for this tool and for anything else.
@@ -370,6 +515,7 @@ fn parse_arguments() -> Result<Options, String> {
         channel: 1,
         seconds: 30,
         sample_rate: 48_000.0,
+        device: None,
         dry_run: false,
     };
 
@@ -380,6 +526,8 @@ fn parse_arguments() -> Result<Options, String> {
             std::process::exit(0);
         }
         "simulate" => options.mode = Mode::Simulate,
+        "listen" => options.mode = Mode::Listen,
+        "devices" => options.mode = Mode::Devices,
         "gen" => {
             let path = arguments
                 .next()
@@ -423,6 +571,7 @@ fn parse_arguments() -> Result<Options, String> {
             "--rate" => {
                 options.sample_rate = value()?.parse().map_err(|_| "bad --rate".to_string())?
             }
+            "--device" => options.device = Some(value()?),
             "--dry-run" => options.dry_run = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -432,7 +581,8 @@ fn parse_arguments() -> Result<Options, String> {
         }
     }
 
-    if options.cues.as_os_str().is_empty() && !matches!(options.mode, Mode::Gen(_)) {
+    if options.cues.as_os_str().is_empty() && !matches!(options.mode, Mode::Gen(_) | Mode::Devices)
+    {
         return Err(format!("--cues is required\n\n{USAGE}"));
     }
     Ok(options)

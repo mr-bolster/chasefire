@@ -104,7 +104,7 @@ impl fmt::Display for Timecode {
 }
 
 /// One successfully decoded LTC frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DecodedFrame {
     pub timecode: Timecode,
     /// The signal is running backwards (rewind, or a scrubbing operator).
