@@ -11,9 +11,15 @@
 //! mic preamp, converter in), that starts happening once the signal-to-noise
 //! ratio drops to about 12 dB: eleven bad frames in a hundred and thirty.
 //!
-//! One bad frame is not a cosmetic problem. A cue engine reasonably treats a
-//! large jump as a seek, so a single garbage frame makes it re-sync and disarm
-//! cues that were about to go — a missed cue caused by noise on a cable.
+//! One bad frame is not a cosmetic problem, though not in the way you would
+//! first guess. A wildly wrong value reads as a seek and heals itself, because
+//! the next good frame reads as a seek back. The damage is done by a value
+//! that is wrong by only a little: it stays inside the seek threshold, so it
+//! looks like ordinary playback, fires the cue it appears to have passed, and
+//! then the step backwards re-arms that cue so it fires *again* when the
+//! timecode really arrives. One corrupted frame, two triggers, and nothing in
+//! the cue list afterwards to explain it. There is a test that builds exactly
+//! that situation, in `tests/protects_the_cue_engine.rs`.
 //!
 //! So this layer applies, in order:
 //!
