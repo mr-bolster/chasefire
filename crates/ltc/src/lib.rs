@@ -594,6 +594,77 @@ mod tests {
     }
 
     #[test]
+    fn decodes_every_sample_rate_at_every_frame_rate() {
+        // The matrix a live rig actually throws at you. 96 kHz gives the decoder
+        // twice the samples per bit; 44.1 kHz at 60 fps gives it barely nine,
+        // which is the tightest corner of the whole table.
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+            for (nominal, fps) in [(24u8, 24.0), (25, 25.0), (30, 30.0), (50, 50.0), (60, 60.0)] {
+                let spec = Sequence {
+                    start: Timecode::new(10, 0, 30, 0),
+                    count: 12,
+                    nominal_fps: nominal,
+                    fps,
+                    sample_rate,
+                    amplitude: 0.5,
+                };
+                let mut audio = Vec::new();
+                let expected = Encoder::new().encode_sequence(spec, &mut audio);
+
+                let mut decoder = Decoder::new(sample_rate, fps);
+                let mut decoded = Vec::new();
+                decoder.push_samples(&audio, &mut decoded);
+
+                assert!(
+                    decoded.len() >= expected.len() - 1,
+                    "{sample_rate} Hz at {fps} fps: only {} of {} frames decoded \
+                     ({:.2} samples per bit)",
+                    decoded.len(),
+                    expected.len(),
+                    sample_rate / (80.0 * fps)
+                );
+                for frame in &decoded {
+                    assert!(
+                        expected.contains(&frame.timecode),
+                        "{sample_rate} Hz at {fps} fps decoded a wrong value: {}",
+                        frame.timecode
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frame_numbers_above_39_do_not_fit_in_the_format() {
+        // Not our bug, the format's: LTC gives the frame count four bits of
+        // units and only TWO of tens. Anything from 40 up is unrepresentable,
+        // which is exactly why 50 and 60 fps are carried as half-rate pairs
+        // rather than as a native frame count. Pinned here so nobody "fixes"
+        // the encoder into silently lying about it later.
+        let spec = Sequence {
+            start: Timecode::new(1, 0, 0, 42),
+            count: 1,
+            nominal_fps: 60,
+            fps: 60.0,
+            sample_rate: 48_000.0,
+            amplitude: 0.5,
+        };
+        let mut audio = Vec::new();
+        Encoder::new().encode_sequence(spec, &mut audio);
+
+        let mut decoder = Decoder::new(48_000.0, 60.0);
+        let mut decoded = Vec::new();
+        decoder.push_samples(&audio, &mut decoded);
+
+        if let Some(frame) = decoded.first() {
+            assert_ne!(
+                frame.timecode.frames, 42,
+                "frame 42 came back intact — the format cannot do that"
+            );
+        }
+    }
+
+    #[test]
     fn timecode_is_formatted_the_way_the_trade_writes_it() {
         assert_eq!(Timecode::new(1, 2, 3, 4).to_string(), "01:02:03:04");
         assert_eq!(

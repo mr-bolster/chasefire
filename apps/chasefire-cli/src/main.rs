@@ -35,6 +35,8 @@ OPTIONS:
     --offset <n>      Fire n frames early          [default: 0]
     --channel <n>     WAV channel holding the LTC  [default: 1]
     --seconds <n>     Length for gen               [default: 30]
+    --rate <hz>       Sample rate for gen:
+                      44100, 48000, 96000          [default: 48000]
     --dry-run         Print what would fire, send nothing
     -h, --help        This
 ";
@@ -51,6 +53,7 @@ struct Options {
     offset: i32,
     channel: usize,
     seconds: u32,
+    sample_rate: f64,
     dry_run: bool,
 }
 
@@ -101,7 +104,7 @@ fn run() -> Result<(), String> {
 
 /// Write a WAV of clean LTC: a test signal for this tool and for anything else.
 fn generate_wav(options: &Options, path: &PathBuf) -> Result<(), String> {
-    let sample_rate = 48_000.0;
+    let sample_rate = options.sample_rate;
     let frames = (options.seconds as f64 * options.fps).round() as u32;
 
     let mut audio = Vec::new();
@@ -135,10 +138,11 @@ fn generate_wav(options: &Options, path: &PathBuf) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
 
     println!(
-        "Wrote {} — {} s of {:.2} fps LTC from {}",
+        "Wrote {} — {} s of {:.2} fps LTC at {} Hz from {}",
         path.display(),
         options.seconds,
         options.fps,
+        sample_rate as u32,
         options.from
     );
     Ok(())
@@ -289,6 +293,7 @@ fn parse_arguments() -> Result<Options, String> {
         offset: 0,
         channel: 1,
         seconds: 30,
+        sample_rate: 48_000.0,
         dry_run: false,
     };
 
@@ -337,6 +342,9 @@ fn parse_arguments() -> Result<Options, String> {
             }
             "--seconds" => {
                 options.seconds = value()?.parse().map_err(|_| "bad --seconds".to_string())?
+            }
+            "--rate" => {
+                options.sample_rate = value()?.parse().map_err(|_| "bad --rate".to_string())?
             }
             "--dry-run" => options.dry_run = true,
             "-h" | "--help" => {
