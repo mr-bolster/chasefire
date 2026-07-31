@@ -770,7 +770,11 @@ impl Options {
         } else {
             egui::ScrollArea::both()
                 .max_height(CUE_ROW * CUES_VISIBLE)
-                .auto_shrink([false, false])
+                // Wide, but only as tall as it needs to be. Locking the
+                // vertical axis too made a four-cue list reserve room for
+                // twenty and push Timing, Appearance, Support and About off
+                // the bottom of the window.
+                .auto_shrink([false, true])
                 .id_salt("cuelist")
                 .show(ui, |ui| {
                     // Laid out by hand rather than with a Grid, and not for
