@@ -350,10 +350,12 @@ dependencies = [
 name = "chasefire"
 version = "0.1.0"
 dependencies = [
+ "cue",
  "eframe",
  "ltc",
  "pablo",
  "png 0.17.16",
+ "serde_json",
  "show",
 ]
 

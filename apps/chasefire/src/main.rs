@@ -11,15 +11,52 @@ use eframe::egui;
 use pablo::{Mood, Presentation};
 use show::{Event, Runner};
 
+/// What the window was told on the way in. Everything here will eventually be
+/// a setting behind Options; until then it is the only way to point it at a
+/// sound card, and it is useful to keep even afterwards for a fixed install.
+#[derive(Default)]
+struct Startup {
+    device: Option<String>,
+    channel: usize,
+    osc: Option<String>,
+    cues: Option<String>,
+    fps: Option<f64>,
+    screenshot: Option<String>,
+    /// Seconds to wait before taking it, so the shot can catch a running show
+    /// rather than an empty window.
+    screenshot_after: f32,
+}
+
+fn parse_startup() -> Startup {
+    let arguments: Vec<String> = std::env::args().collect();
+    let value = |flag: &str| {
+        arguments
+            .windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+    };
+    Startup {
+        device: value("--device"),
+        channel: value("--channel")
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(1),
+        osc: value("--osc"),
+        cues: value("--cues"),
+        fps: value("--fps").and_then(|text| text.parse().ok()),
+        screenshot: value("--screenshot"),
+        screenshot_after: value("--screenshot-after")
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(0.3),
+    }
+}
+
 fn main() -> eframe::Result {
     install_crash_log();
-    let arguments: Vec<String> = std::env::args().collect();
-    // A hidden way to grab a picture of the window without a screenshot tool,
-    // used for the documentation and for looking at it from a terminal.
-    let shoot_to = arguments
-        .windows(2)
-        .find(|pair| pair[0] == "--screenshot")
-        .map(|pair| pair[1].clone());
+    let startup = parse_startup();
+    let shoot_to = startup
+        .screenshot
+        .clone()
+        .map(|path| (path, startup.screenshot_after));
 
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([360.0, 132.0])
@@ -33,7 +70,7 @@ fn main() -> eframe::Result {
             viewport,
             ..Default::default()
         },
-        Box::new(|_context| Ok(Box::new(Window::new(shoot_to)))),
+        Box::new(move |_context| Ok(Box::new(Window::new(startup, shoot_to)))),
     )
 }
 
@@ -73,16 +110,50 @@ struct Window {
     pablo: pablo_view::PabloView,
     presentation: Presentation,
     always_on_top: bool,
-    /// Frames left before taking a picture and quitting, if asked to.
-    screenshot: Option<(String, u32)>,
+    /// Where to write a picture of the window, and when.
+    screenshot: Option<(String, f32)>,
     last_message: Option<String>,
 }
 
 impl Window {
-    fn new(screenshot: Option<String>) -> Self {
+    fn new(startup: Startup, screenshot: Option<(String, f32)>) -> Self {
         let mut runner = Runner::new(25);
         // Nothing is armed because a window opened. Arming is a decision.
         runner.set_armed(false);
+        runner.pin_frame_rate(startup.fps);
+
+        let mut notes = Vec::new();
+
+        if let Some(path) = &startup.cues {
+            match std::fs::read_to_string(path)
+                .map_err(|error| error.to_string())
+                .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+            {
+                Ok(cues) => {
+                    let cues: Vec<cue::Cue> = cues;
+                    notes.push(format!("{} cues", cues.len()));
+                    runner.set_cues(cues);
+                }
+                Err(error) => notes.push(format!("cues: {error}")),
+            }
+        }
+
+        if let Some(target) = &startup.osc {
+            match runner.connect_osc(target) {
+                Ok(()) => notes.push(format!("OSC → {target}")),
+                Err(error) => notes.push(format!("OSC: {error}")),
+            }
+        }
+
+        // Open an input straight away. Left to itself it takes the default
+        // one, so launching the thing with no arguments still does something
+        // rather than sitting there looking broken.
+        match runner.open_input(startup.device.as_deref(), startup.channel) {
+            Ok(()) => notes.push(format!("in: {}", runner.device_name().unwrap_or("?"))),
+            // Not fatal, and deliberately so. No sound card is a thing to say
+            // in the window, not a reason for the window to vanish.
+            Err(error) => notes.push(format!("no input: {error}")),
+        }
 
         Self {
             runner,
@@ -90,8 +161,8 @@ impl Window {
             presentation: Presentation::default(),
             always_on_top: true,
             // A few frames of grace so the layout has settled before the shot.
-            screenshot: screenshot.map(|path| (path, 8)),
-            last_message: None,
+            screenshot,
+            last_message: (!notes.is_empty()).then(|| notes.join("  ·  ")),
         }
     }
 
@@ -212,14 +283,13 @@ impl eframe::App for Window {
         }
 
         if let Some((path, remaining)) = &mut self.screenshot {
-            if *remaining == 0 {
+            *remaining -= context.input(|input| input.stable_dt);
+            if *remaining <= 0.0 {
                 let path = path.clone();
                 context.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
                     path,
                 )));
                 self.screenshot = None;
-            } else {
-                *remaining -= 1;
             }
         }
         save_any_screenshot(context);
