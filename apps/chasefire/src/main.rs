@@ -130,7 +130,7 @@ struct Window {
 /// 48-pixel sprite, which is the point: this is for the operator who is looking
 /// somewhere else entirely.
 /// Brief: this happens a lot during a show and must not become a strobe.
-const FIRED_LENGTH: f32 = 0.28;
+const FIRED_LENGTH: f32 = 0.34;
 /// Longer: a cue that failed is worth interrupting somebody for.
 const FAILED_LENGTH: f32 = 0.9;
 
@@ -139,6 +139,8 @@ struct Flash {
     colour: egui::Color32,
     remaining: f32,
     length: f32,
+    /// How opaque it gets at the moment of firing, out of 255.
+    peak: f32,
 }
 
 impl Flash {
@@ -146,9 +148,10 @@ impl Flash {
     /// must not become a strobe in the corner of somebody's eye.
     fn fired() -> Self {
         Self {
-            colour: egui::Color32::from_rgb(70, 220, 120),
+            colour: egui::Color32::from_rgb(70, 235, 125),
             remaining: FIRED_LENGTH,
             length: FIRED_LENGTH,
+            peak: 150.0,
         }
     }
 
@@ -156,17 +159,29 @@ impl Flash {
     /// the one thing in this window worth interrupting somebody for.
     fn failed() -> Self {
         Self {
-            colour: egui::Color32::from_rgb(240, 80, 70),
+            colour: egui::Color32::from_rgb(245, 70, 60),
             remaining: FAILED_LENGTH,
             length: FAILED_LENGTH,
+            peak: 185.0,
         }
     }
 
-    fn alpha(&self, peak: f32) -> u8 {
-        // Straight up, then a curve down: the eye catches the arrival, and the
-        // fade is slow enough to register without lingering.
+    /// The colour to lay over the window right now.
+    ///
+    /// Full strength the instant it fires and then a fade, which is what makes
+    /// it read as a flash rather than as a tint. Over the top of the content it
+    /// can be much stronger than it could underneath and still leave the
+    /// timecode legible through it — and it is over for good in a third of a
+    /// second.
+    fn wash(&self) -> egui::Color32 {
         let through = (self.remaining / self.length).clamp(0.0, 1.0);
-        (through.powf(0.6) * peak) as u8
+        let alpha = (through.powf(0.75) * self.peak) as u8;
+        egui::Color32::from_rgba_unmultiplied(
+            self.colour.r(),
+            self.colour.g(),
+            self.colour.b(),
+            alpha,
+        )
     }
 }
 
@@ -269,28 +284,6 @@ impl eframe::App for Window {
 
         let situation = self.runner.situation();
         let mood = Mood::read(situation);
-
-        // Painted before anything else, so it washes behind the content rather
-        // than over the top of the numbers somebody is trying to read.
-        if let Some(flash) = &mut self.flash {
-            flash.remaining -= context.input(|input| input.stable_dt);
-            if flash.remaining <= 0.0 {
-                self.flash = None;
-            } else {
-                let peak = if flash.colour.r() > 200.0 as u8 {
-                    110.0
-                } else {
-                    76.0
-                };
-                let wash = egui::Color32::from_rgba_unmultiplied(
-                    flash.colour.r(),
-                    flash.colour.g(),
-                    flash.colour.b(),
-                    flash.alpha(peak),
-                );
-                ui.painter().rect_filled(ui.max_rect(), 0.0, wash);
-            }
-        }
 
         // One set of measurements for the whole window, and one width that
         // everything else is derived from. Asking egui for the space left over
@@ -551,6 +544,22 @@ impl eframe::App for Window {
                 });
             });
         });
+
+        // The flash goes on a foreground layer, painted after everything and
+        // above it. Behind the content it was almost invisible: the widgets
+        // cover most of the window, so the wash only showed in the gaps.
+        if let Some(flash) = &mut self.flash {
+            flash.remaining -= context.input(|input| input.stable_dt);
+            if flash.remaining <= 0.0 {
+                self.flash = None;
+            } else {
+                let painter = context.layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("cue-flash"),
+                ));
+                painter.rect_filled(ui.max_rect(), 0.0, flash.wash());
+            }
+        }
 
         if let Some((path, remaining)) = &mut self.screenshot {
             *remaining -= context.input(|input| input.stable_dt);
