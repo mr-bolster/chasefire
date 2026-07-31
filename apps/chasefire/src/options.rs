@@ -887,6 +887,40 @@ impl Options {
                 changed = true;
             }
 
+            // A working cue for whatever machine this is pointed at. Not
+            // magic and not hidden: it writes one ordinary cue that can then
+            // be edited like any other. What it saves is the half hour of
+            // reading a manual to find out that QLab wants no arguments.
+            egui::ComboBox::from_id_salt("preset")
+                .selected_text(words.from_a_preset)
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for preset in crate::presets::ALL {
+                        let mut label = egui::RichText::new(preset.name);
+                        if preset.port_unconfirmed {
+                            label = label.italics();
+                        }
+                        if ui
+                            .selectable_label(false, label)
+                            .on_hover_text(if preset.port_unconfirmed {
+                                format!("{} — {}", preset.note, words.port_unconfirmed)
+                            } else {
+                                preset.note.to_string()
+                            })
+                            .clicked()
+                        {
+                            let next = cues.iter().map(|cue| cue.id).max().unwrap_or(0) + 1;
+                            cues.push(preset.cue(next));
+                            if let Some(target) = preset.suggested_target() {
+                                self.osc_target = target;
+                                self.osc_name = preset.name.to_lowercase();
+                            }
+                            self.message = Some(words.preset_added.replace("{}", preset.name));
+                            changed = true;
+                        }
+                    }
+                });
+
             // What the ticks are for. Both buttons say how many they would
             // take, so nobody has to count ticks before pressing one.
             let picked: Vec<usize> = cues

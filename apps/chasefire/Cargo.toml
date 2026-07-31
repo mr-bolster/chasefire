@@ -26,3 +26,4 @@ eframe = { version = "0.35", default-features = false, features = [
     "x11",
 ] }
 png = "0.17"
+sink = { path = "../../crates/sink" }

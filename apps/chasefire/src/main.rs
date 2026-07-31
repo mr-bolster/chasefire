@@ -8,6 +8,7 @@
 mod cuefile;
 mod options;
 mod pablo_view;
+mod presets;
 mod reminder;
 mod settings;
 mod text;
