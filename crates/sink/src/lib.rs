@@ -4,6 +4,10 @@
 //! is a new file rather than surgery on the engine. Sinks never decide *whether*
 //! to fire — that argument was settled in the `cue` crate — they only send.
 
+pub mod midi;
+
+pub use midi::MidiSink;
+
 use cue::{Carrier, Message, OscArg, Step};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};

@@ -9,7 +9,7 @@
 use chase::{Chaser, Signal};
 use cue::{Cue, Engine, Firing};
 use ltc::Timecode;
-use sink::{OscSink, Outputs};
+use sink::{MidiSink, OscSink, Outputs};
 use std::time::Instant;
 
 /// Whether the input is actually delivering anything.
@@ -221,6 +221,18 @@ impl Runner {
             self.default_osc = Some(name.to_string());
         }
         let _ = described;
+        Ok(())
+    }
+
+    /// Everywhere this machine can send MIDI.
+    pub fn midi_ports() -> Vec<String> {
+        MidiSink::ports().unwrap_or_default()
+    }
+
+    /// Open a local MIDI port under a name cues can address.
+    pub fn connect_midi_as(&mut self, name: &str, port: &str) -> Result<(), String> {
+        let sink = MidiSink::open(port)?;
+        self.outputs.put(name, Box::new(sink));
         Ok(())
     }
 

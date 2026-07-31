@@ -37,6 +37,8 @@ const DEST: f32 = 76.0;
 /// margin on both sides, and the indent the section headings put on their
 /// contents.
 const CHROME: f32 = 100.0;
+/// The picker that says what sort of message a line carries.
+const KIND: f32 = 74.0;
 /// The smallest each elastic column may become. Below these a field stops
 /// being clickable, which is worse than a list that has to be scrolled.
 const AT_FLOOR: f32 = 96.0;
@@ -88,6 +90,11 @@ pub struct Options {
     osc_target: String,
     /// What the next output added will be called. Cues address outputs by name.
     osc_name: String,
+    /// The MIDI ports this machine has, listed once because asking is slow.
+    midi_ports: Vec<String>,
+    ports_listed: bool,
+    midi_port: Option<String>,
+    midi_name: String,
     /// Which transport's settings are on show.
     output_tab: Carrier,
     /// Which cues the list is showing.
@@ -181,6 +188,10 @@ impl Options {
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
             osc_name: String::new(),
+            midi_ports: Vec::new(),
+            ports_listed: false,
+            midi_port: None,
+            midi_name: String::new(),
             output_tab: Carrier::Osc,
             filter: Filter::Everything,
             selected: std::collections::HashSet::new(),
@@ -381,16 +392,86 @@ impl Options {
             // Listed rather than hidden. Somebody deciding whether this tool
             // fits their rig needs to know what it will and will not do, and
             // finding that out by not finding a setting is a poor way to learn.
-            Carrier::Midi => {
-                hint(ui, words.midi_not_built);
-                ui.add_space(4.0);
-                hint(ui, words.midi_note);
-            }
+            Carrier::Midi => self.midi_outputs(ui, runner, words),
             Carrier::Network => {
                 hint(ui, words.midi_not_built);
                 ui.add_space(4.0);
                 hint(ui, words.rtp_note);
             }
+        }
+    }
+
+    /// The local MIDI ports.
+    ///
+    /// This is the half of the trade that does not speak OSC at all: a
+    /// grandMA2 takes MIDI Show Control or nothing, and SuperRack recalls
+    /// snapshots on Program Change.
+    fn midi_outputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        if !self.ports_listed {
+            self.ports_listed = true;
+            self.midi_ports = Runner::midi_ports();
+        }
+
+        grid(ui, "midi-outputs", |ui| {
+            label(ui, words.add_output);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.midi_name)
+                        .desired_width(80.0)
+                        .hint_text(words.output_name),
+                );
+                let chosen = self
+                    .midi_port
+                    .clone()
+                    .unwrap_or_else(|| words.no_midi_ports.to_string());
+                egui::ComboBox::from_id_salt("midi-port")
+                    .selected_text(shorten(&chosen, 30))
+                    .width(FIELD - 80.0)
+                    .show_ui(ui, |ui| {
+                        for port in &self.midi_ports {
+                            ui.selectable_value(&mut self.midi_port, Some(port.clone()), port);
+                        }
+                    });
+                if ui.button(words.rescan).clicked() {
+                    self.midi_ports = Runner::midi_ports();
+                    self.message = Some(
+                        words
+                            .ports_found
+                            .replace("{}", &self.midi_ports.len().to_string()),
+                    );
+                }
+                let ready = self.midi_port.is_some();
+                if ui
+                    .add_enabled(ready, egui::Button::new(words.connect))
+                    .clicked()
+                {
+                    let name = if self.midi_name.trim().is_empty() {
+                        "midi".to_string()
+                    } else {
+                        self.midi_name.trim().to_string()
+                    };
+                    let port = self.midi_port.clone().unwrap_or_default();
+                    match runner.connect_midi_as(&name, &port) {
+                        Ok(()) => {
+                            self.message = Some(words.sending_to.replace("{}", &port));
+                            self.midi_name.clear();
+                        }
+                        Err(error) => self.message = Some(error),
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        ui.add_space(2.0);
+        if self.midi_ports.is_empty() {
+            hint(ui, words.no_midi_ports_hint);
+        } else {
+            hint(ui, words.midi_note);
         }
     }
 
@@ -1116,7 +1197,7 @@ impl Widths {
     /// gaps between all of it.
     fn fixed(show_destination: bool) -> f32 {
         let destination = if show_destination { DEST + GAP } else { 0.0 };
-        PICK + TICK + ADD_STEP + DROP_STEP + destination + GAP * 6.0
+        PICK + TICK + KIND + ADD_STEP + DROP_STEP + destination + GAP * 7.0
     }
 
     /// The narrowest the table can be drawn with every field still usable.
@@ -1259,6 +1340,27 @@ fn step_editor(
         gap(ui);
     }
 
+    // What sort of message this is. A cue list mixes them freely — the moment
+    // that starts the video also changes a snapshot on the desk — so the kind
+    // belongs on the line, not in a mode somewhere else.
+    cell(ui, KIND, |ui| {
+        let mut kind = Kind::of(&step.send);
+        egui::ComboBox::from_id_salt(ui.next_auto_id())
+            .selected_text(egui::RichText::new(kind.label(words)).size(11.0))
+            .width(KIND)
+            .show_ui(ui, |ui| {
+                for option in Kind::ALL {
+                    ui.selectable_value(&mut kind, option, option.label(words));
+                }
+            });
+        if kind != Kind::of(&step.send) {
+            step.send = kind.blank();
+            changed = true;
+        }
+    });
+    gap(ui);
+
+    let room = address_width + args_width + GAP;
     match &mut step.send {
         cue::Message::Osc { address, args } => {
             cell(ui, address_width, |ui| {
@@ -1272,17 +1374,156 @@ fn step_editor(
             });
             gap(ui);
         }
-        // MIDI has no output to go out of yet, so it is shown and not edited
-        // rather than pretending to work.
-        other => {
-            cell(ui, address_width + args_width + GAP, |ui| {
-                ui.label(egui::RichText::new(format!("{other:?}")).size(11.0).weak());
+        cue::Message::MidiNote {
+            channel,
+            note,
+            velocity,
+        } => {
+            cell(ui, room, |ui| {
+                changed |= number(ui, words.midi_channel, channel, 1..=16);
+                changed |= number(ui, words.midi_note_number, note, 0..=127);
+                changed |= number(ui, words.midi_velocity, velocity, 0..=127);
+            });
+            gap(ui);
+        }
+        cue::Message::MidiProgramChange {
+            channel,
+            program,
+            bank,
+        } => {
+            cell(ui, room, |ui| {
+                changed |= number(ui, words.midi_channel, channel, 1..=16);
+                changed |= number(ui, words.midi_program, program, 0..=127);
+                // The bank is what reaches SuperRack snapshots past 128.
+                let mut banked = bank.is_some();
+                if ui
+                    .checkbox(&mut banked, egui::RichText::new(words.midi_bank).size(11.0))
+                    .on_hover_text(words.midi_bank_tooltip)
+                    .changed()
+                {
+                    *bank = banked.then_some((0, 0));
+                    changed = true;
+                }
+                if let Some((msb, lsb)) = bank {
+                    changed |= number(ui, "MSB", msb, 0..=127);
+                    changed |= number(ui, "LSB", lsb, 0..=127);
+                }
+            });
+            gap(ui);
+        }
+        cue::Message::MidiControlChange {
+            channel,
+            controller,
+            value,
+        } => {
+            cell(ui, room, |ui| {
+                changed |= number(ui, words.midi_channel, channel, 1..=16);
+                changed |= number(ui, words.midi_controller, controller, 0..=127);
+                changed |= number(ui, words.midi_value, value, 0..=127);
+            });
+            gap(ui);
+        }
+        cue::Message::ShowControl(msc) => {
+            cell(ui, room, |ui| {
+                egui::ComboBox::from_id_salt(ui.next_auto_id())
+                    .selected_text(egui::RichText::new(msc.command.name()).size(11.0))
+                    .width(74.0)
+                    .show_ui(ui, |ui| {
+                        for option in cue::ShowCommand::ALL {
+                            changed |= ui
+                                .selectable_value(&mut msc.command, option, option.name())
+                                .changed();
+                        }
+                    });
+                ui.label(egui::RichText::new(words.msc_cue).size(11.0));
+                changed |= ui
+                    .add(egui::TextEdit::singleline(&mut msc.cue).desired_width(52.0))
+                    .on_hover_text(words.msc_cue_tooltip)
+                    .changed();
+                changed |= number(ui, words.msc_device, &mut msc.device, 0..=127);
             });
             gap(ui);
         }
     }
 
     changed
+}
+
+/// Which sort of message a step carries, as a thing you can pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Osc,
+    Note,
+    Program,
+    Control,
+    ShowControl,
+}
+
+impl Kind {
+    const ALL: [Kind; 5] = [
+        Kind::Osc,
+        Kind::Note,
+        Kind::Program,
+        Kind::Control,
+        Kind::ShowControl,
+    ];
+
+    fn of(message: &cue::Message) -> Self {
+        match message {
+            cue::Message::Osc { .. } => Kind::Osc,
+            cue::Message::MidiNote { .. } => Kind::Note,
+            cue::Message::MidiProgramChange { .. } => Kind::Program,
+            cue::Message::MidiControlChange { .. } => Kind::Control,
+            cue::Message::ShowControl(_) => Kind::ShowControl,
+        }
+    }
+
+    fn label(self, words: &'static crate::text::Text) -> &'static str {
+        match self {
+            Kind::Osc => "OSC",
+            Kind::Note => words.kind_note,
+            Kind::Program => words.kind_program,
+            Kind::Control => words.kind_control,
+            Kind::ShowControl => "MSC",
+        }
+    }
+
+    /// A message of this kind with settings that do something harmless.
+    fn blank(self) -> cue::Message {
+        match self {
+            Kind::Osc => cue::Message::Osc {
+                address: String::new(),
+                args: Vec::new(),
+            },
+            Kind::Note => cue::Message::MidiNote {
+                channel: 1,
+                note: 60,
+                velocity: 127,
+            },
+            Kind::Program => cue::Message::MidiProgramChange {
+                channel: 1,
+                program: 0,
+                bank: None,
+            },
+            Kind::Control => cue::Message::MidiControlChange {
+                channel: 1,
+                controller: 1,
+                value: 0,
+            },
+            Kind::ShowControl => cue::Message::ShowControl(cue::ShowControl::default()),
+        }
+    }
+}
+
+/// A small labelled number, of the sort MIDI is made of.
+fn number(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut u8,
+    range: std::ops::RangeInclusive<u8>,
+) -> bool {
+    ui.label(egui::RichText::new(label).size(11.0).weak());
+    ui.add(egui::DragValue::new(value).range(range)).changed()
 }
 
 /// The arguments that ride along with an OSC address.
@@ -1538,8 +1779,11 @@ mod tests {
         // room as it had last frame and a TextEdit will not take more room than
         // it is offered. The two agreed with each other for ever and dragging
         // the window did nothing.
-        let narrow = address_field_width(720.0);
-        let wide = address_field_width(1280.0);
+        // Anchored to the narrowest the table can honestly be drawn, so adding
+        // a column later moves the test with the layout instead of breaking it.
+        let narrowest = Widths::narrowest(false);
+        let narrow = address_field_width(narrowest + CHROME);
+        let wide = address_field_width(narrowest + CHROME + 560.0);
 
         assert!(
             narrow > ADDRESS_FLOOR,
@@ -1548,7 +1792,7 @@ mod tests {
         // A quarter of the extra room, at least. The exact share is a layout
         // decision and may move; "dragging the window wider visibly helps" is
         // the thing that must never stop being true.
-        let extra = 1280.0 - 720.0;
+        let extra = 560.0;
         assert!(
             wide - narrow >= extra * 0.25,
             "widening the window by {extra:.0}px gave the address field {:.0}px more",

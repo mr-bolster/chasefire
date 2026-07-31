@@ -46,6 +46,82 @@ pub enum Message {
         controller: u8,
         value: u8,
     },
+    /// MIDI Show Control: a system exclusive message, and the only thing a
+    /// grandMA2 or a ChamSys will take from us. Neither speaks OSC.
+    ShowControl(ShowControl),
+}
+
+/// One MIDI Show Control command.
+///
+/// The shape is fixed by the standard: `F0 7F <device> 02 <format> <command>
+/// <data> F7`. What varies between desks is which device id they are listening
+/// on and which format they answer to, so both are settings rather than
+/// constants — a console ignoring a message because it was addressed to device
+/// 0 when it is listening on 3 is silent and baffling.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShowControl {
+    /// 0x00..=0x6F one desk, 0x70..=0x7E a group, 0x7F everybody.
+    pub device: u8,
+    /// 0x01 general lighting, 0x02 moving lights, 0x7F all types.
+    pub format: u8,
+    pub command: ShowCommand,
+    /// The cue number **as written**, decimals and all: "21.5", not 21.5. The
+    /// standard sends it as text, and 21.5 and 21.50 are different cues.
+    pub cue: String,
+    /// The cue list, when the desk needs telling which one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<String>,
+}
+
+/// The commands worth having. The standard defines more; these are the ones
+/// consoles actually implement and operators actually use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShowCommand {
+    Go,
+    Stop,
+    Resume,
+    GoOff,
+}
+
+impl ShowCommand {
+    pub fn byte(self) -> u8 {
+        match self {
+            ShowCommand::Go => 0x01,
+            ShowCommand::Stop => 0x02,
+            ShowCommand::Resume => 0x03,
+            ShowCommand::GoOff => 0x0B,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ShowCommand::Go => "GO",
+            ShowCommand::Stop => "STOP",
+            ShowCommand::Resume => "RESUME",
+            ShowCommand::GoOff => "GO OFF",
+        }
+    }
+
+    pub const ALL: [ShowCommand; 4] = [
+        ShowCommand::Go,
+        ShowCommand::Stop,
+        ShowCommand::Resume,
+        ShowCommand::GoOff,
+    ];
+}
+
+impl Default for ShowControl {
+    fn default() -> Self {
+        Self {
+            // Everybody, general lighting: the setting most likely to be heard
+            // by a desk nobody has configured yet.
+            device: 0x7F,
+            format: 0x01,
+            command: ShowCommand::Go,
+            cue: "1".into(),
+            list: None,
+        }
+    }
 }
 
 impl Message {
