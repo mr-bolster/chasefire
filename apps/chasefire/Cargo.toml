@@ -12,5 +12,13 @@ authors.workspace = true
 ltc = { path = "../../crates/ltc" }
 pablo = { path = "../../crates/pablo" }
 show = { path = "../../crates/show" }
-eframe = "0.35"
+# Default features drag in wgpu, and with it a DirectX 12 dependency stack that
+# does not currently build on Windows. This window needs none of it: glow is
+# OpenGL, works everywhere, and makes for a smaller binary.
+eframe = { version = "0.35", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "wayland",
+    "x11",
+] }
 png = "0.17"

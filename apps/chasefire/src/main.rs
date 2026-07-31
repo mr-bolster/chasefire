@@ -12,6 +12,7 @@ use pablo::{Mood, Presentation};
 use show::{Event, Runner};
 
 fn main() -> eframe::Result {
+    install_crash_log();
     let arguments: Vec<String> = std::env::args().collect();
     // A hidden way to grab a picture of the window without a screenshot tool,
     // used for the documentation and for looking at it from a terminal.
@@ -34,6 +35,37 @@ fn main() -> eframe::Result {
         },
         Box::new(|_context| Ok(Box::new(Window::new(shoot_to)))),
     )
+}
+
+/// Write down why we died, somewhere findable.
+///
+/// A window that vanishes without a word is no use to anyone, and it is worse
+/// than useless to someone in a dark room ten minutes before doors. Whatever
+/// kills this goes to stderr *and* to a file next to the executable, because
+/// the person it happens to will not have started it from a terminal.
+fn install_crash_log() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = format!("chasefire died: {info}\n");
+        eprint!("{message}");
+        if let Some(path) = crash_log_path() {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = file.write_all(message.as_bytes());
+                eprintln!("(also written to {})", path.display());
+            }
+        }
+        previous(info);
+    }));
+}
+
+fn crash_log_path() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    Some(executable.with_file_name("chasefire-crash.log"))
 }
 
 struct Window {
