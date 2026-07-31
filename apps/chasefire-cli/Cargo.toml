@@ -13,6 +13,7 @@ ltc = { path = "../../crates/ltc" }
 cue = { path = "../../crates/cue" }
 chase = { path = "../../crates/chase" }
 audio = { path = "../../crates/audio" }
+pablo = { path = "../../crates/pablo" }
 sink = { path = "../../crates/sink" }
 serde_json = "1"
 hound = "3"

@@ -23,6 +23,7 @@ USAGE:
     chasefire-cli gen <file> [options]
     chasefire-cli listen --cues <file> [options]
     chasefire-cli devices
+    chasefire-cli pablo
     chasefire-cli latency --device <in> --out-device <out> [options]
 
 MODES:
@@ -31,6 +32,7 @@ MODES:
     gen <file>        Write a WAV of LTC to test with (--seconds, --from, --fps)
     listen            Read LTC live from a sound card and fire cues
     devices           List the audio inputs this machine has
+    pablo             Show Pablo in the terminal, every mood in turn
     latency           Measure the round trip: generate LTC out of one device,
                       read it back on another, and time the difference
 
@@ -75,6 +77,7 @@ struct Options {
 }
 
 enum Mode {
+    Pablo,
     Latency,
     Listen,
     Devices,
@@ -102,6 +105,9 @@ fn run() -> Result<(), String> {
     if matches!(options.mode, Mode::Latency) {
         return measure_latency(&options);
     }
+    if matches!(options.mode, Mode::Pablo) {
+        return show_pablo();
+    }
 
     let cues = load_cues(&options.cues)?;
     println!("Loaded {} cues from {}", cues.len(), options.cues.display());
@@ -125,8 +131,59 @@ fn run() -> Result<(), String> {
         Mode::Simulate => simulate(&mut engine, &mut output, &options),
         Mode::Wav(path) => decode_wav(&mut engine, &mut output, &options, path),
         Mode::Listen => listen(&mut engine, &mut output, &options),
-        Mode::Gen(_) | Mode::Devices | Mode::Latency => unreachable!("handled above"),
+        Mode::Gen(_) | Mode::Devices | Mode::Latency | Mode::Pablo => {
+            unreachable!("handled above")
+        }
     }
+}
+
+/// Colour for each pixel character, so Pablo can be looked at before there is
+/// a window to put him in.
+fn ink(pixel: char) -> &'static str {
+    match pixel {
+        '#' => "\x1b[38;5;58m",  // dark hair
+        'o' => "\x1b[38;5;223m", // skin
+        'e' => "\x1b[38;5;236m", // eye
+        'T' => "\x1b[38;5;24m",  // shirt
+        'A' => "\x1b[38;5;223m", // arm
+        'G' => "\x1b[38;5;130m", // guitar body
+        'N' => "\x1b[38;5;94m",  // guitar neck
+        'P' => "\x1b[38;5;189m", // pyjamas
+        '^' => "\x1b[38;5;217m", // nightcap
+        'b' => "\x1b[38;5;152m", // snot bubble
+        'z' => "\x1b[38;5;250m", // zzz
+        '?' => "\x1b[38;5;220m",
+        _ => "\x1b[0m",
+    }
+}
+
+fn draw_pablo(frame: pablo::sprites::Frame, label: &str) {
+    for line in frame {
+        let mut rendered = String::new();
+        for pixel in line.chars() {
+            if pixel == '.' {
+                rendered.push_str("  ");
+            } else {
+                rendered.push_str(ink(pixel));
+                rendered.push_str("██");
+            }
+        }
+        rendered.push_str("\x1b[0m");
+        println!("{rendered}");
+    }
+    println!("\x1b[0m  {label}\n");
+}
+
+fn show_pablo() -> Result<(), String> {
+    use pablo::Mood;
+    for mood in [Mood::Asleep, Mood::Pyjamas, Mood::Playing, Mood::Wobbling] {
+        let frames = pablo::sprites::frames_for(mood);
+        println!("\x1b[1m── {mood:?} — {} ──\x1b[0m", mood.describe());
+        for (index, frame) in frames.iter().enumerate() {
+            draw_pablo(frame, &format!("frame {}/{}", index + 1, frames.len()));
+        }
+    }
+    Ok(())
 }
 
 fn list_devices() -> Result<(), String> {
@@ -653,6 +710,7 @@ fn parse_arguments() -> Result<Options, String> {
         "listen" => options.mode = Mode::Listen,
         "devices" => options.mode = Mode::Devices,
         "latency" => options.mode = Mode::Latency,
+        "pablo" => options.mode = Mode::Pablo,
         "gen" => {
             let path = arguments
                 .next()
@@ -708,7 +766,10 @@ fn parse_arguments() -> Result<Options, String> {
     }
 
     if options.cues.as_os_str().is_empty()
-        && !matches!(options.mode, Mode::Gen(_) | Mode::Devices | Mode::Latency)
+        && !matches!(
+            options.mode,
+            Mode::Gen(_) | Mode::Devices | Mode::Latency | Mode::Pablo
+        )
     {
         return Err(format!("--cues is required\n\n{USAGE}"));
     }

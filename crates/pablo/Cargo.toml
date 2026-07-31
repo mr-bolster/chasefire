@@ -1,0 +1,11 @@
+[package]
+name = "pablo"
+description = "Pablo: the little guitarist who tells you, without words, whether the show is running"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
