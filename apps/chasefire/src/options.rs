@@ -21,6 +21,12 @@ const GAP: f32 = 10.0;
 const LABEL: f32 = 118.0;
 /// And every field is this wide unless it has a reason not to be.
 const FIELD: f32 = 220.0;
+/// The tick box at the head of a cue row.
+const TICK: f32 = 22.0;
+/// The number that goes out with the address.
+const VALUE: f32 = 66.0;
+/// The remove button at the end of a cue row.
+const REMOVE: f32 = 52.0;
 /// One row of the cue list, near enough, for working out how many fit.
 const CUE_ROW: f32 = 23.0;
 /// How many cues should be visible without scrolling when there is room.
@@ -33,7 +39,7 @@ const CUES_VISIBLE: f32 = 20.0;
 /// public by design and made to be shared, while an email address in a public
 /// repository is an address that harvesters will find.
 pub const DONATE_URL: &str = "https://paypal.me/mrbolster";
-const HOME_PAGE: &str = "https://mrbolster.app";
+const SOURCE_URL: &str = "https://github.com/mr-bolster/chasefire";
 
 /// Rates worth offering, and what each is called on a spec sheet.
 const RATES: [(&str, f64); 7] = [
@@ -338,7 +344,9 @@ impl Options {
         // it stops being usable. The timecode needs the least — it is always
         // eleven characters — but cramming it into exactly eleven characters
         // makes it fiddly to click into, so it gets a share too.
-        let fixed = 34.0 + 66.0 + 72.0 + GAP * 5.0;
+        // What the row spends on things that never change size: the tick, the
+        // value, the remove button, and the five gaps between the six of them.
+        let fixed = TICK + VALUE + REMOVE + GAP * 5.0;
         let flexible = (width - fixed - 20.0).max(280.0);
         let at_width = (flexible * 0.14).max(96.0);
         let name_width = (flexible * 0.30).max(110.0);
@@ -351,64 +359,77 @@ impl Options {
                 .max_height(CUE_ROW * CUES_VISIBLE)
                 .id_salt("cuelist")
                 .show(ui, |ui| {
-                    egui::Grid::new("cues")
-                        .num_columns(5)
-                        .spacing([GAP, 4.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.label(egui::RichText::new(words.column_on).size(11.0).weak());
-                            ui.label(egui::RichText::new(words.column_at).size(11.0).weak());
-                            ui.label(egui::RichText::new(words.column_name).size(11.0).weak());
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(words.column_sends).size(11.0).weak());
-                                ui.add_space(address_width - 34.0);
-                                ui.label(egui::RichText::new(words.column_value).size(11.0).weak())
-                                    .on_hover_text(
-                                        "The argument that goes with the address. Resolume treats 1 \
-                                         as \"do it\" and 0 as \"undo it\"; a fader would take the \
-                                         level instead.",
-                                    );
-                            });
-                            ui.label("");
-                            ui.end_row();
+                    // Laid out by hand rather than with a Grid, and not for
+                    // taste. A Grid gives a non-final column only as much room
+                    // as that column had last frame, and a TextEdit will not
+                    // take more room than it is offered — so the two feed each
+                    // other and the fields freeze at whatever width they had on
+                    // the first frame. Widening the window did nothing at all.
+                    // Rows of our own break the loop: each one is told its
+                    // widths outright.
+                    row(ui, |ui| {
+                        heading(ui, words.column_on, TICK);
+                        heading(ui, words.column_at, at_width);
+                        heading(ui, words.column_name, name_width);
+                        heading(ui, words.column_sends, address_width);
+                        heading(ui, words.column_value, VALUE).on_hover_text(words.value_tooltip);
+                    });
 
-                            for (index, cue) in cues.iter_mut().enumerate() {
-                                changed |= ui.checkbox(&mut cue.enabled, "").changed();
+                    for (index, cue) in cues.iter_mut().enumerate() {
+                        // Alternating bands, painted behind the row. Reserved
+                        // before the row is drawn and filled in after, once its
+                        // real height is known — twenty near-identical lines of
+                        // timecode are hard to follow otherwise.
+                        let band = ui.painter().add(egui::Shape::Noop);
+                        let response = row(ui, |ui| {
+                            changed |= ui
+                                .add_sized(
+                                    [TICK, CUE_ROW],
+                                    egui::Checkbox::without_text(&mut cue.enabled),
+                                )
+                                .changed();
 
-                                // Typed the way the trade writes it, and only
-                                // accepted once it is actually a timecode: a
-                                // half-typed one must not move a cue to midnight.
-                                let mut text = cue.at.to_string();
-                                if ui
-                                    .add(
-                                        egui::TextEdit::singleline(&mut text)
-                                            .desired_width(at_width)
-                                            .font(egui::TextStyle::Monospace),
-                                    )
-                                    .on_hover_text(words.at_tooltip)
-                                    .changed()
-                                {
-                                    if let Some(parsed) = parse_timecode(&text) {
-                                        cue.at = parsed;
-                                        changed = true;
-                                    }
+                            // Typed the way the trade writes it, and only
+                            // accepted once it is actually a timecode: a
+                            // half-typed one must not move a cue to midnight.
+                            let mut text = cue.at.to_string();
+                            let edited = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut text)
+                                        .desired_width(at_width)
+                                        .font(egui::TextStyle::Monospace),
+                                )
+                                .on_hover_text(words.at_tooltip)
+                                .changed();
+                            if edited {
+                                if let Some(parsed) = parse_timecode(&text) {
+                                    cue.at = parsed;
+                                    changed = true;
                                 }
+                            }
 
-                                changed |= ui
-                                    .add(
-                                        egui::TextEdit::singleline(&mut cue.name)
-                                            .desired_width(name_width),
-                                    )
-                                    .changed();
+                            changed |= ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut cue.name)
+                                        .desired_width(name_width),
+                                )
+                                .changed();
 
-                                changed |= action_editor(ui, &mut cue.action, words, address_width);
+                            changed |= action_editor(ui, &mut cue.action, words, address_width);
 
-                                if ui.small_button(words.remove).clicked() {
-                                    remove = Some(index);
-                                }
-                                ui.end_row();
+                            if ui.small_button(words.remove).clicked() {
+                                remove = Some(index);
                             }
                         });
+
+                        if index % 2 == 1 {
+                            let stripe = ui.visuals().faint_bg_color;
+                            ui.painter().set(
+                                band,
+                                egui::Shape::rect_filled(response.response.rect, 2.0, stripe),
+                            );
+                        }
+                    }
                 });
         }
 
@@ -546,12 +567,6 @@ fn support_section(ui: &mut egui::Ui, words: &'static crate::text::Text) {
         if ui.add(donate).on_hover_text(DONATE_URL).clicked() {
             ui.ctx().open_url(egui::OpenUrl::new_tab(DONATE_URL));
         }
-
-        ui.add_space(GAP);
-        ui.vertical(|ui| {
-            ui.hyperlink_to("mrbolster.app", HOME_PAGE);
-            hint(ui, words.downloads);
-        });
     });
 
     ui.add_space(GAP);
@@ -592,10 +607,7 @@ fn support_section(ui: &mut egui::Ui, words: &'static crate::text::Text) {
         ui.end_row();
 
         label(ui, words.source);
-        ui.hyperlink_to(
-            "github.com/mr-bolster/chasefire",
-            "https://github.com/mr-bolster/chasefire",
-        );
+        ui.hyperlink_to(SOURCE_URL.trim_start_matches("https://"), SOURCE_URL);
         ui.end_row();
 
         label(ui, words.settings_live_in);
@@ -652,6 +664,24 @@ fn shorten(text: &str, room: usize) -> String {
     format!("…{tail}")
 }
 
+/// One line of the cue list. Nothing between the widgets but the gaps we put
+/// there ourselves: egui adds its own spacing on top of anything we allocate,
+/// which is how rows end up a few pixels wider than the window every time.
+fn row<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = GAP;
+        contents(ui)
+    })
+}
+
+/// A column heading, sitting over the field it names.
+fn heading(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
+    ui.add_sized(
+        [width, 14.0],
+        egui::Label::new(egui::RichText::new(text).size(11.0).weak()).halign(egui::Align::LEFT),
+    )
+}
+
 /// Edit whatever a cue does. Only OSC exists so far, so this is one row; when
 /// MIDI arrives it becomes a choice of kind and then its own fields.
 fn action_editor(
@@ -662,18 +692,18 @@ fn action_editor(
 ) -> bool {
     match action {
         cue::Action::Osc { address, args } => {
-            let mut changed = false;
-            ui.horizontal(|ui| {
-                changed = ui
-                    .add(egui::TextEdit::singleline(address).desired_width(width))
+            // Drawn straight into the row it was called from, not in a
+            // horizontal of its own: a nested one brings its own spacing and
+            // the value stops lining up with the heading above it.
+            let mut changed = ui
+                .add(egui::TextEdit::singleline(address).desired_width(width))
+                .changed();
+            if let Some(cue::OscArg::Int(value)) = args.first_mut() {
+                changed |= ui
+                    .add_sized([VALUE, CUE_ROW - 5.0], egui::DragValue::new(value))
+                    .on_hover_text(words.value_tooltip)
                     .changed();
-                if let Some(cue::OscArg::Int(value)) = args.first_mut() {
-                    changed |= ui
-                        .add(egui::DragValue::new(value))
-                        .on_hover_text(words.value_tooltip)
-                        .changed();
-                }
-            });
+            }
             changed
         }
         other => {
@@ -737,6 +767,79 @@ mod tests {
             })
             .rect
             .width()
+    }
+
+    /// Lay out one cue row in a window `window_wide` wide and give back the
+    /// width the address field actually got. No window is opened: egui will
+    /// lay out against whatever screen rect it is handed.
+    fn address_field_width(window_wide: f32) -> f32 {
+        let context = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(window_wide, 860.0),
+            )),
+            ..Default::default()
+        };
+
+        let mut measured = 0.0;
+        // Twice, because a layout that only settles on the second frame is
+        // still a layout that works — and the bug this guards against was one
+        // that never settled at all.
+        for _ in 0..2 {
+            let _ = context.run_ui(input.clone(), |context| {
+                egui::CentralPanel::default()
+                    .frame(
+                        egui::Frame::central_panel(context.style().as_ref()).inner_margin(MARGIN),
+                    )
+                    .show(context, |ui| {
+                        let width = ui.max_rect().width();
+                        let fixed = TICK + VALUE + REMOVE + GAP * 5.0;
+                        let flexible = (width - fixed - 20.0).max(280.0);
+                        let at_width = (flexible * 0.14).max(96.0);
+                        let name_width = (flexible * 0.30).max(110.0);
+                        let address_width = (flexible - at_width - name_width).max(150.0);
+
+                        let mut address = String::from("/composition/columns/1/connect");
+                        let mut name = String::from("cue 1");
+                        let mut at = String::from("10:00:00:00");
+                        let mut on = true;
+                        row(ui, |ui| {
+                            ui.add_sized([TICK, CUE_ROW], egui::Checkbox::without_text(&mut on));
+                            ui.add(egui::TextEdit::singleline(&mut at).desired_width(at_width));
+                            ui.add(egui::TextEdit::singleline(&mut name).desired_width(name_width));
+                            measured = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut address)
+                                        .desired_width(address_width),
+                                )
+                                .rect
+                                .width();
+                            let _ = ui.small_button("x");
+                        });
+                    });
+            });
+        }
+        measured
+    }
+
+    #[test]
+    fn the_cue_fields_grow_with_the_window() {
+        // The one that was wrong, and wrong in a way that looked like arithmetic
+        // and was not. The widths were always worked out correctly; the fields
+        // never got them, because a Grid offers a non-final column only as much
+        // room as it had last frame and a TextEdit will not take more room than
+        // it is offered. The two agreed with each other for ever and dragging
+        // the window did nothing.
+        let narrow = address_field_width(720.0);
+        let wide = address_field_width(1280.0);
+
+        assert!(narrow > 150.0, "the address field started off unusable");
+        assert!(
+            wide > narrow + 200.0,
+            "widening the window by 560px gave the address field {:.0}px more",
+            wide - narrow
+        );
     }
 
     #[test]
