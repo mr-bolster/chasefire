@@ -20,7 +20,8 @@ use show::{Event, Runner};
 #[derive(Default)]
 struct Startup {
     device: Option<String>,
-    channel: usize,
+    /// `None` when nobody said, so the remembered one is left alone.
+    channel: Option<usize>,
     osc: Option<String>,
     cues: Option<String>,
     fps: Option<f64>,
@@ -51,9 +52,7 @@ fn parse_startup() -> Startup {
     };
     Startup {
         device: value("--device"),
-        channel: value("--channel")
-            .and_then(|text| text.parse().ok())
-            .unwrap_or(1),
+        channel: value("--channel").and_then(|text| text.parse().ok()),
         osc: value("--osc"),
         cues: value("--cues"),
         fps: value("--fps").and_then(|text| text.parse().ok()),
@@ -316,12 +315,7 @@ impl Window {
         if startup.device.is_some() {
             settings.device = startup.device.clone();
         }
-        if let Some(channel) = std::env::args()
-            .collect::<Vec<_>>()
-            .windows(2)
-            .find(|pair| pair[0] == "--channel")
-            .and_then(|pair| pair[1].parse::<usize>().ok())
-        {
+        if let Some(channel) = startup.channel {
             settings.channel = channel;
         }
         if startup.osc.is_some() {
