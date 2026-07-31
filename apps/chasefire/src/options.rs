@@ -37,12 +37,9 @@ const DEST: f32 = 76.0;
 /// margin on both sides, and the indent the section headings put on their
 /// contents.
 const CHROME: f32 = 100.0;
-/// What the settings window spends above the cue list — the input and output
-/// sections — and below it, on the buttons and the legend. Measured from the
-/// window rather than guessed, and only used to choose an opening size: it
-/// costs nothing if it drifts a little.
-const ABOVE_THE_LIST: f32 = 350.0;
-const BELOW_THE_LIST: f32 = 90.0;
+/// How tall the settings window opens. Chosen to sit comfortably on the
+/// shortest screen anybody is likely to run a show from.
+const WINDOW_TALL: f32 = 1000.0;
 /// The picker that says what sort of message a line carries.
 const KIND: f32 = 74.0;
 /// The smallest each elastic column may become. Below these a field stops
@@ -248,13 +245,11 @@ impl Options {
             // Tall enough that twenty cues fit without scrolling, and wide
             // enough that an OSC address is readable without dragging it out.
             // Wide enough that a cue with a long OSC address and a couple of
-            // arguments reads without dragging anything, and tall enough that
-            // the whole visible run of the cue list is there on opening rather
-            // than being scrolled to.
-            .with_inner_size([
-                Widths::narrowest(true) + CHROME + 120.0,
-                ABOVE_THE_LIST + CUE_ROW * CUES_VISIBLE + BELOW_THE_LIST,
-            ])
+            // arguments reads without dragging anything, and as tall as a
+            // 1080-line screen will take without the bottom going under a
+            // taskbar. The cue list is at the end and scrolls into view; it
+            // shows its full twenty-five lines when it gets there.
+            .with_inner_size([Widths::narrowest(true) + CHROME + 120.0, WINDOW_TALL])
             // Narrow enough to be dragged out of the way, wide enough that the
             // cue table still draws every field at a size somebody can click.
             // Below this the list scrolls sideways rather than shrinking things
@@ -291,12 +286,16 @@ impl Options {
         language: &mut crate::text::Language,
     ) {
         let words = crate::text::Text::of(*language);
+        // The cue list goes last, and it goes last because it is the only
+        // thing here that has no natural size. Everything above it is a
+        // handful of rows and can be taken in at a glance; putting the long
+        // one first pushed all of it below the fold.
         self.input_section(ui, runner, words);
         self.outputs_section(ui, runner, words);
-        self.cues_section(ui, runner, words);
         self.timing_section(ui, runner, words);
         appearance_section(ui, presentation, language, words);
         support_section(ui, words);
+        self.cues_section(ui, runner, words);
 
         if let Some(message) = &self.message {
             ui.add_space(GAP);
