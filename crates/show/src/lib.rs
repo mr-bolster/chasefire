@@ -152,6 +152,34 @@ impl Runner {
         self.output.as_ref().map(|sink| sink.target().to_string())
     }
 
+    /// How long the chaser keeps counting after the signal goes.
+    pub fn set_freewheel_frames(&mut self, frames: u32) {
+        self.chaser.set_freewheel_frames(frames);
+    }
+
+    pub fn freewheel_frames(&self) -> u32 {
+        self.chaser.freewheel_frames()
+    }
+
+    /// The rate the operator pinned, if any. `None` means it is measured.
+    pub fn pinned_frame_rate(&self) -> Option<f64> {
+        self.pinned_fps
+    }
+
+    /// True when a sound card is open.
+    pub fn is_listening(&self) -> bool {
+        self.capture.is_some()
+    }
+
+    /// Load a cue list from a JSON file, replacing whatever is loaded.
+    pub fn load_cues(&mut self, path: &std::path::Path) -> Result<usize, String> {
+        let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        let cues: Vec<Cue> = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+        let count = cues.len();
+        self.engine.set_cues(cues);
+        Ok(count)
+    }
+
     /// The next cue due, and how many seconds away it is.
     ///
     /// The single most useful thing a show tool can put on screen after the

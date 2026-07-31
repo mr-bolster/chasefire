@@ -5,6 +5,7 @@
 //! Pablo. That is the whole of it, because that is all anyone glances at while
 //! doing three other jobs. Everything else lives behind Options.
 
+mod options;
 mod pablo_view;
 
 use eframe::egui;
@@ -152,6 +153,7 @@ struct Window {
     log: std::collections::VecDeque<String>,
     /// A wash of colour across the whole window when something fires.
     flash: Option<Flash>,
+    options: options::Options,
 }
 
 /// The window flashing to say a cue went out.
@@ -273,6 +275,12 @@ impl Window {
             // A few frames of grace so the layout has settled before the shot.
             screenshot,
             log: notes.into_iter().rev().take(2).collect(),
+            options: options::Options::new(
+                startup.device.clone(),
+                startup.channel,
+                startup.osc.clone(),
+                startup.cues.clone(),
+            ),
             flash: match startup.demo_flash.as_deref() {
                 Some("failed") => Some(Flash::failed()),
                 Some(_) => Some(Flash::fired()),
@@ -492,7 +500,7 @@ impl eframe::App for Window {
                 .add(egui::Button::new("Options").min_size(egui::vec2(options_width, ROW)))
                 .clicked()
             {
-                self.note("Options: not built yet".into());
+                self.options.open = true;
             }
 
             ui.add_space(GAP);
@@ -613,6 +621,9 @@ impl eframe::App for Window {
                 });
             });
         });
+
+        self.options
+            .show(context, &mut self.runner, &mut self.presentation);
 
         // The flash goes on a foreground layer, painted after everything and
         // above it. Behind the content it was almost invisible: the widgets

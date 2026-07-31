@@ -12,6 +12,7 @@ authors.workspace = true
 ltc = { path = "../../crates/ltc" }
 pablo = { path = "../../crates/pablo" }
 show = { path = "../../crates/show" }
+audio = { path = "../../crates/audio" }
 cue = { path = "../../crates/cue" }
 serde_json = "1"
 # Default features drag in wgpu, and with it a DirectX 12 dependency stack that

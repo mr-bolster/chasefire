@@ -350,6 +350,7 @@ dependencies = [
 name = "chasefire"
 version = "0.1.0"
 dependencies = [
+ "audio",
  "cue",
  "eframe",
  "ltc",
@@ -2456,6 +2457,7 @@ dependencies = [
  "cue",
  "ltc",
  "pablo",
+ "serde_json",
  "sink",
 ]
 
