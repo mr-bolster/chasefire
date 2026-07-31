@@ -67,6 +67,17 @@ no keyboard shortcut: the window sits above everything else, so it can take
 focus without anyone noticing, and a stray keypress that silently disarms a
 running show is a worse problem than having to aim at a button.
 
+## Two languages
+
+English and Spanish, chosen in Options and remembered. Not a lookup table: every
+string is a field of one struct that both languages have to fill in, so a missing
+translation is a **compile error** rather than a stray key somebody finds on a
+stage. The card's own complaints are translated too, since those are the words
+read at the worst possible moment.
+
+The Spanish is the Spanish this trade actually speaks. Nobody says *código de
+tiempo lineal*; they say LTC.
+
 ## Trying it with no hardware at all
 
 ```bash

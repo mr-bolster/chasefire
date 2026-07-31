@@ -33,6 +33,7 @@ pub struct Settings {
     /// True for the little guitarist, false for the transport marks.
     pub pablo: bool,
     pub always_on_top: bool,
+    pub language: crate::text::Language,
     /// How many times the reminder has been closed. Kept because it is honest,
     /// and because it is funnier than a number nobody can see.
     pub reminders_dismissed: u32,
@@ -50,6 +51,7 @@ impl Default for Settings {
             freewheel_frames: 8,
             pablo: true,
             always_on_top: true,
+            language: crate::text::Language::default(),
             reminders_dismissed: 0,
         }
     }

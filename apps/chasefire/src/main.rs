@@ -9,6 +9,7 @@ mod options;
 mod pablo_view;
 mod reminder;
 mod settings;
+mod text;
 
 use eframe::egui;
 use pablo::{Mood, Presentation};
@@ -97,7 +98,10 @@ fn claim_single_instance() -> Result<std::net::UdpSocket, bool> {
 /// again. Two copies fighting over one sound card is exactly the failure this
 /// is here to prevent, so the explanation has to arrive.
 fn complain_already_running() -> eframe::Result {
-    eprintln!("chasefire is already running");
+    // Reads the saved language before doing anything else: somebody who set
+    // this to Spanish should not be told off in English.
+    let words = text::Text::of(settings::Settings::load().0.language);
+    eprintln!("{}", words.already_running_title);
     eframe::run_native(
         "Chasefire",
         eframe::NativeOptions {
@@ -107,30 +111,27 @@ fn complain_already_running() -> eframe::Result {
                 .with_title("Chasefire"),
             ..Default::default()
         },
-        Box::new(|_| Ok(Box::new(AlreadyRunning))),
+        Box::new(move |_| Ok(Box::new(AlreadyRunning { words }))),
     )
 }
 
-struct AlreadyRunning;
+struct AlreadyRunning {
+    words: &'static text::Text,
+}
 
 impl eframe::App for AlreadyRunning {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.add_space(18.0);
         ui.vertical_centered(|ui| {
             ui.label(
-                egui::RichText::new("Chasefire is already running")
+                egui::RichText::new(self.words.already_running_title)
                     .size(16.0)
                     .strong(),
             );
             ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(
-                    "Two copies would fight over the same sound card,\nand neither would read the timecode.",
-                )
-                .size(12.0),
-            );
+            ui.label(egui::RichText::new(self.words.already_running_body).size(12.0));
             ui.add_space(12.0);
-            if ui.button("Close").clicked() {
+            if ui.button(self.words.close).clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
@@ -346,12 +347,13 @@ impl Window {
         runner.set_offset_frames(settings.offset_frames);
         runner.set_freewheel_frames(settings.freewheel_frames);
 
+        let startup_words = text::Text::of(settings.language);
         let mut notes = Vec::new();
         if let Some(note) = settings_note {
             notes.push(note);
         }
         if startup.arm {
-            notes.push("armed from the command line".to_string());
+            notes.push(startup_words.armed_from_command_line.to_string());
         }
 
         if let Some(path) = &cue_file {
@@ -361,7 +363,11 @@ impl Window {
             {
                 Ok(cues) => {
                     let cues: Vec<cue::Cue> = cues;
-                    notes.push(format!("{} cues loaded", cues.len()));
+                    notes.push(
+                        startup_words
+                            .cues_loaded
+                            .replace("{}", &cues.len().to_string()),
+                    );
                     runner.set_cues(cues);
                 }
                 Err(error) => notes.push(format!("cues: {error}")),
@@ -384,7 +390,7 @@ impl Window {
             Ok(()) => {}
             // Not fatal, and deliberately so. No sound card is a thing to say
             // in the window, not a reason for the window to vanish.
-            Err(error) => notes.push(format!("no input: {error}")),
+            Err(error) => notes.push(startup_words.audio_error(&error)),
         }
 
         // Written once on the way in, not only when something later changes.
@@ -443,6 +449,7 @@ impl Window {
             freewheel_frames: self.runner.freewheel_frames(),
             pablo: self.presentation == Presentation::Pablo,
             always_on_top: self.always_on_top,
+            language: self.settings.language,
             reminders_dismissed: self.reminder.dismissed(),
         }
     }
@@ -478,8 +485,15 @@ impl Window {
     fn remember(&mut self) {
         self.settings = self.current_settings();
         if let Err(error) = self.settings.save() {
-            self.note(format!("settings not saved: {error}"));
+            let message = self.text().settings_not_saved.replace("{}", &error);
+            self.note(message);
         }
+    }
+
+    /// The words, in whichever language is set. Static, so holding one does
+    /// not borrow the window and tie up everything else.
+    fn text(&self) -> &'static text::Text {
+        text::Text::of(self.settings.language)
     }
 
     fn timecode_text(&self) -> String {
@@ -504,6 +518,7 @@ impl eframe::App for Window {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
         let context = &context;
+        let words = self.text();
         for event in self.runner.poll() {
             let line = match event {
                 Event::Fired { firing, sent } => match sent {
@@ -520,7 +535,7 @@ impl eframe::App for Window {
                 Event::Locked { fps, nominal } => {
                     format!("locked {fps:.2} fps, counting at {nominal}")
                 }
-                Event::SignalLost => "signal lost".to_string(),
+                Event::SignalLost => words.signal_lost.to_string(),
             };
             self.note(line);
         }
@@ -531,7 +546,7 @@ impl eframe::App for Window {
         let health = self.runner.health();
         if health != self.last_health {
             self.last_health = health;
-            if let Some(message) = health.describe(self.runner.channel().unwrap_or(1)) {
+            if let Some(message) = words.health(health, self.runner.channel().unwrap_or(1)) {
                 self.note(message);
             }
         }
@@ -601,7 +616,7 @@ impl eframe::App for Window {
                                 format!("{}  ·  {rate:.2} fps", source.label())
                             }
                             (Some(source), None) => format!("{}  ·  — fps", source.label()),
-                            (None, _) => "no input".to_string(),
+                            (None, _) => words.no_input.to_string(),
                         };
                         ui.label(
                             egui::RichText::new(source)
@@ -616,12 +631,12 @@ impl eframe::App for Window {
                         let (red, green, blue) = mood.colour();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                egui::RichText::new(mood.badge())
+                                egui::RichText::new(words.badge(mood))
                                     .size(12.0)
                                     .strong()
                                     .color(egui::Color32::from_rgb(red, green, blue)),
                             )
-                            .on_hover_text(mood.describe());
+                            .on_hover_text(words.mood(mood));
                         });
                     });
                 });
@@ -636,7 +651,7 @@ impl eframe::App for Window {
                     .runner
                     .error()
                     .map(str::to_string)
-                    .or_else(|| health.describe(self.runner.channel().unwrap_or(1)));
+                    .or_else(|| words.health(health, self.runner.channel().unwrap_or(1)));
 
                 ui.allocate_ui(egui::vec2(width, 20.0), |ui| {
                     if let Some(message) = &trouble {
@@ -660,9 +675,13 @@ impl eframe::App for Window {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
                                 ui.label(
-                                    egui::RichText::new(format!("next  {}", trim_to(&name, 24)))
-                                        .size(13.0)
-                                        .color(colour),
+                                    egui::RichText::new(format!(
+                                        "{}  {}",
+                                        words.next_cue,
+                                        trim_to(&name, 24)
+                                    ))
+                                    .size(13.0)
+                                    .color(colour),
                                 );
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -678,7 +697,7 @@ impl eframe::App for Window {
                             });
                         }
                         None => {
-                            ui.label(egui::RichText::new("no cue ahead").size(13.0).weak());
+                            ui.label(egui::RichText::new(words.no_cue_ahead).size(13.0).weak());
                         }
                     }
                 });
@@ -700,9 +719,9 @@ impl eframe::App for Window {
 
             let armed = self.runner.is_armed();
             let (label, colour) = if armed {
-                ("ARMED", egui::Color32::from_rgb(70, 200, 110))
+                (words.armed, egui::Color32::from_rgb(70, 200, 110))
             } else {
-                ("DISARMED", egui::Color32::from_rgb(210, 150, 40))
+                (words.disarmed, egui::Color32::from_rgb(210, 150, 40))
             };
             // The only way to arm or disarm, on purpose. There is no keyboard
             // shortcut and there should not be: this window sits above
@@ -723,7 +742,7 @@ impl eframe::App for Window {
 
             ui.add_space(GAP);
             if ui
-                .add(egui::Button::new("Options").min_size(egui::vec2(options_width, ROW)))
+                .add(egui::Button::new(words.options).min_size(egui::vec2(options_width, ROW)))
                 .clicked()
             {
                 self.options.open = true;
@@ -735,17 +754,17 @@ impl eframe::App for Window {
             // amber while it is not, plain when the pin is off.
             let pin_button = if self.always_on_top {
                 egui::Button::new(
-                    egui::RichText::new("PIN")
+                    egui::RichText::new(words.pin)
                         .strong()
                         .color(egui::Color32::BLACK),
                 )
                 .fill(colour)
             } else {
-                egui::Button::new(egui::RichText::new("pin").weak())
+                egui::Button::new(egui::RichText::new(words.pin).weak())
             };
             if ui
                 .add(pin_button.min_size(egui::vec2(pin_width, ROW)))
-                .on_hover_text("Keep this window above the others")
+                .on_hover_text(words.pin_tooltip)
                 .clicked()
             {
                 self.always_on_top = !self.always_on_top;
@@ -794,6 +813,9 @@ impl eframe::App for Window {
                     // taller than the log across the divider and the second
                     // line sitting lower than its opposite number. Monospace
                     // does the aligning that the widget row was there for.
+                    // How much fits on one of these lines after the label.
+                    // Monospace, so characters are a fair unit.
+                    const LINE: usize = 27;
                     let line = |label: &str, value: String| {
                         egui::RichText::new(format!("{label:<4}{value}"))
                             .monospace()
@@ -801,18 +823,29 @@ impl eframe::App for Window {
                             .weak()
                     };
                     ui.label(line(
-                        "in",
+                        words.in_label,
                         match self.runner.device_name() {
-                            Some(name) => format!(
-                                "{}  ch {}",
-                                shorten(name),
-                                self.runner.channel().unwrap_or(1)
-                            ),
+                            Some(name) => {
+                                // The channel is never dropped; the card name
+                                // gives way instead. Worked out from the words
+                                // in use rather than fixed, because "ch" is two
+                                // characters and "canal" is five, and the line
+                                // wrapped the first time it was read in Spanish.
+                                let tail = format!(
+                                    "{} {}",
+                                    words.channel_short,
+                                    self.runner.channel().unwrap_or(1)
+                                );
+                                format!(
+                                    "{}  {tail}",
+                                    shorten(name, LINE.saturating_sub(tail.chars().count() + 2))
+                                )
+                            }
                             None => "—".to_string(),
                         },
                     ));
                     ui.label(line(
-                        "out",
+                        words.out_label,
                         match self.runner.output_target() {
                             Some(target) => format!("OSC {target}"),
                             None => "—".to_string(),
@@ -848,15 +881,19 @@ impl eframe::App for Window {
             });
         });
 
-        self.options
-            .show(context, &mut self.runner, &mut self.presentation);
+        self.options.show(
+            context,
+            &mut self.runner,
+            &mut self.presentation,
+            &mut self.settings.language,
+        );
 
         // The reminder waits for the window to settle, and stands down for good
         // the moment a show is running. `busy` is the whole safety rule.
         let busy = self.runner.is_armed() || self.runner.timecode().is_some();
         self.reminder
             .update(context.input(|input| input.stable_dt), busy);
-        if self.reminder.show(context, options::DONATE_URL) {
+        if self.reminder.show(context, options::DONATE_URL, words) {
             self.remember();
         }
         self.remember_if_changed();
@@ -914,14 +951,16 @@ fn small(text: &str) -> egui::RichText {
 
 /// Device names carry the whole ALSA or WASAPI incantation, which is no use in
 /// a strip this wide. Keep the end, which is the part that identifies the card.
-fn shorten(name: &str) -> String {
-    const ROOM: usize = 22;
-    if name.chars().count() <= ROOM {
+/// Trim a device name to `room` characters, keeping the tail — the end of an
+/// ALSA or WASAPI name is the part that tells one card from another.
+fn shorten(name: &str, room: usize) -> String {
+    let room = room.max(8);
+    if name.chars().count() <= room {
         return name.to_string();
     }
     let tail: String = name
         .chars()
-        .skip(name.chars().count().saturating_sub(ROOM - 1))
+        .skip(name.chars().count().saturating_sub(room - 1))
         .collect();
     format!("…{tail}")
 }

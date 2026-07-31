@@ -67,7 +67,12 @@ impl Reminder {
     }
 
     /// Draw it. Returns true when it was closed, so the count can be saved.
-    pub fn show(&mut self, context: &egui::Context, paypal: &str) -> bool {
+    pub fn show(
+        &mut self,
+        context: &egui::Context,
+        paypal: &str,
+        words: &'static crate::text::Text,
+    ) -> bool {
         if !self.showing {
             return false;
         }
@@ -84,23 +89,16 @@ impl Reminder {
                 ui.add_space(14.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
-                        egui::RichText::new("Chasefire is free, and stays free")
+                        egui::RichText::new(words.reminder_title)
                             .size(17.0)
                             .strong(),
                     );
                     ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "No licence, no expiry, nothing switched off if you never pay.\n\
-                             If it earns you money, put something in once — what you think\n\
-                             it is worth. Never a subscription.",
-                        )
-                        .size(12.5),
-                    );
+                    ui.label(egui::RichText::new(words.reminder_body).size(12.5));
 
                     ui.add_space(14.0);
                     let donate = egui::Button::new(
-                        egui::RichText::new("Donate")
+                        egui::RichText::new(words.donate)
                             .size(15.0)
                             .strong()
                             .color(egui::Color32::WHITE),
@@ -113,7 +111,7 @@ impl Reminder {
 
                     ui.add_space(8.0);
                     if ui
-                        .add(egui::Button::new("Not today").min_size(egui::vec2(150.0, 28.0)))
+                        .add(egui::Button::new(words.not_today).min_size(egui::vec2(150.0, 28.0)))
                         .clicked()
                     {
                         closed = true;
@@ -123,10 +121,11 @@ impl Reminder {
                     if self.dismissed > 0 {
                         ui.add_space(8.0);
                         ui.label(
-                            egui::RichText::new(format!(
-                                "You have closed this {} times.",
-                                self.dismissed
-                            ))
+                            egui::RichText::new(
+                                words
+                                    .dismissed_count
+                                    .replace("{}", &self.dismissed.to_string()),
+                            )
                             .size(11.0)
                             .weak(),
                         );

@@ -94,14 +94,16 @@ impl Options {
         context: &egui::Context,
         runner: &mut Runner,
         presentation: &mut Presentation,
+        language: &mut crate::text::Language,
     ) {
+        let words = crate::text::Text::of(*language);
         if !self.open {
             return;
         }
 
         let viewport = egui::ViewportId::from_hash_of("chasefire-options");
         let builder = egui::ViewportBuilder::default()
-            .with_title("Chasefire — Options")
+            .with_title(words.options_title)
             // Tall enough that twenty cues fit without scrolling, and wide
             // enough that an OSC address is readable without dragging it out.
             .with_inner_size([720.0, 860.0])
@@ -119,7 +121,7 @@ impl Options {
                     // things hanging off the edge of the main window.
                     let width = ui.max_rect().width();
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        self.contents(ui, runner, presentation, width);
+                        self.contents(ui, runner, presentation, language, width);
                     });
                 });
             if context.input(|input| input.viewport().close_requested()) {
@@ -134,14 +136,16 @@ impl Options {
         ui: &mut egui::Ui,
         runner: &mut Runner,
         presentation: &mut Presentation,
+        language: &mut crate::text::Language,
         width: f32,
     ) {
-        self.input_section(ui, runner);
-        self.outputs_section(ui, runner);
-        self.cues_section(ui, runner, width);
-        self.timing_section(ui, runner);
-        appearance_section(ui, presentation);
-        support_section(ui);
+        let words = crate::text::Text::of(*language);
+        self.input_section(ui, runner, words);
+        self.outputs_section(ui, runner, words);
+        self.cues_section(ui, runner, words, width);
+        self.timing_section(ui, runner, words);
+        appearance_section(ui, presentation, language, words);
+        support_section(ui, words);
 
         if let Some(message) = &self.message {
             ui.add_space(GAP);
@@ -151,19 +155,24 @@ impl Options {
         }
     }
 
-    fn input_section(&mut self, ui: &mut egui::Ui, runner: &mut Runner) {
-        section(ui, "Input");
+    fn input_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        section(ui, words.section_input);
         grid(ui, "input", |ui| {
-            label(ui, "Device");
+            label(ui, words.device);
             let current = self
                 .chosen_device
                 .clone()
-                .unwrap_or_else(|| "system default".into());
+                .unwrap_or_else(|| words.system_default.into());
             egui::ComboBox::from_id_salt("device")
                 .selected_text(shorten(&current, 44))
                 .width(FIELD)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.chosen_device, None, "system default");
+                    ui.selectable_value(&mut self.chosen_device, None, words.system_default);
                     let names: Vec<String> = self
                         .devices()
                         .iter()
@@ -175,17 +184,17 @@ impl Options {
                 });
             ui.end_row();
 
-            label(ui, "Channel");
+            label(ui, words.channel);
             ui.horizontal(|ui| {
                 ui.add(egui::DragValue::new(&mut self.channel).range(1..=64));
-                hint(ui, "which channel of that input carries the timecode");
+                hint(ui, words.channel_hint);
             });
             ui.end_row();
 
-            label(ui, "Frame rate");
+            label(ui, words.frame_rate);
             ui.horizontal(|ui| {
                 let current = match self.pinned_fps {
-                    None => "work it out".to_string(),
+                    None => words.work_it_out.to_string(),
                     Some(rate) => RATES
                         .iter()
                         .find(|(_, value)| (value - rate).abs() < 0.01)
@@ -196,7 +205,7 @@ impl Options {
                     .selected_text(current)
                     .width(120.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.pinned_fps, None, "work it out");
+                        ui.selectable_value(&mut self.pinned_fps, None, words.work_it_out);
                         for (name, rate) in RATES {
                             ui.selectable_value(&mut self.pinned_fps, Some(rate), name);
                         }
@@ -204,45 +213,49 @@ impl Options {
                 // Not a detail: it is two frames of lock time, and on a stage
                 // that is the difference between catching the first cue and
                 // missing it.
-                hint(
-                    ui,
-                    "told the rate it locks on the first frame; left to work it out, the third",
-                );
+                hint(ui, words.frame_rate_hint);
             });
             ui.end_row();
 
             label(ui, "");
             ui.horizontal(|ui| {
-                if ui.button("Apply and listen").clicked() {
+                if ui.button(words.apply_and_listen).clicked() {
                     runner.pin_frame_rate(self.pinned_fps);
                     match runner.open_input(self.chosen_device.as_deref(), self.channel) {
-                        Ok(()) => self.message = Some("listening".into()),
-                        Err(error) => self.message = Some(error.to_string()),
+                        Ok(()) => self.message = Some(words.listening.into()),
+                        Err(error) => self.message = Some(words.audio_error(&error)),
                     }
                 }
                 if runner.is_listening() {
-                    if ui.button("Stop").clicked() {
+                    if ui.button(words.stop).clicked() {
                         runner.close_input();
-                        self.message = Some("input closed".into());
+                        self.message = Some(words.input_closed.into());
                     }
-                    hint(ui, "applying restarts the input");
+                    hint(ui, words.restarts_input);
                 }
             });
             ui.end_row();
         });
     }
 
-    fn outputs_section(&mut self, ui: &mut egui::Ui, runner: &mut Runner) {
-        section(ui, "Outputs");
+    fn outputs_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        section(ui, words.section_outputs);
         grid(ui, "outputs", |ui| {
             label(ui, "OSC");
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.osc_target).desired_width(FIELD - 80.0),
                 );
-                if ui.button("Connect").clicked() {
+                if ui.button(words.connect).clicked() {
                     match runner.connect_osc(&self.osc_target) {
-                        Ok(()) => self.message = Some(format!("sending to {}", self.osc_target)),
+                        Ok(()) => {
+                            self.message = Some(words.sending_to.replace("{}", &self.osc_target))
+                        }
                         Err(error) => self.message = Some(error),
                     }
                 }
@@ -256,39 +269,44 @@ impl Options {
             label(ui, "MIDI");
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(false, |ui| {
-                    let mut empty = String::from("— no port —");
+                    let mut empty = String::from(words.no_port);
                     ui.add(egui::TextEdit::singleline(&mut empty).desired_width(FIELD - 80.0));
                 });
-                hint(ui, "not built yet");
+                hint(ui, words.not_built_yet);
             });
             ui.end_row();
 
             label(ui, "MIDI over network");
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(false, |ui| {
-                    let mut empty = String::from("— no session —");
+                    let mut empty = String::from(words.no_session);
                     ui.add(egui::TextEdit::singleline(&mut empty).desired_width(FIELD - 80.0));
                 });
-                hint(ui, "not built yet");
+                hint(ui, words.not_built_yet);
             });
             ui.end_row();
         });
         ui.add_space(2.0);
-        hint(
-            ui,
-            "RTP-MIDI will speak the protocol itself, so there is nothing to install and no driver for an update to break.",
-        );
+        hint(ui, words.rtp_note);
     }
 
-    fn cues_section(&mut self, ui: &mut egui::Ui, runner: &mut Runner, width: f32) {
-        section(ui, "Cues");
+    fn cues_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+        width: f32,
+    ) {
+        section(ui, words.section_cues);
         grid(ui, "cuefile", |ui| {
-            label(ui, "File");
+            label(ui, words.file);
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.cue_path).desired_width(FIELD));
-                if ui.button("Load").clicked() {
+                if ui.button(words.load).clicked() {
                     match runner.load_cues(std::path::Path::new(&self.cue_path)) {
-                        Ok(count) => self.message = Some(format!("{count} cues loaded")),
+                        Ok(count) => {
+                            self.message = Some(words.cues_loaded.replace("{}", &count.to_string()))
+                        }
                         Err(error) => self.message = Some(error),
                     }
                 }
@@ -297,7 +315,7 @@ impl Options {
         });
 
         ui.add_space(4.0);
-        self.cue_table(ui, runner, width);
+        self.cue_table(ui, runner, words, width);
     }
 
     /// The cue list, editable in place.
@@ -305,7 +323,13 @@ impl Options {
     /// Editing writes straight through to the engine, which re-arms everything
     /// and forgets where it was. That is correct, and it means editing during a
     /// show is a real interruption rather than a quiet one — hence the warning.
-    fn cue_table(&mut self, ui: &mut egui::Ui, runner: &mut Runner, width: f32) {
+    fn cue_table(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+        width: f32,
+    ) {
         let mut cues = runner.cues().to_vec();
         let mut changed = false;
         let mut remove = None;
@@ -321,7 +345,7 @@ impl Options {
         let address_width = (flexible - at_width - name_width).max(150.0);
 
         if cues.is_empty() {
-            hint(ui, "no cues yet — add one below");
+            hint(ui, words.no_cues_yet);
         } else {
             egui::ScrollArea::vertical()
                 .max_height(CUE_ROW * CUES_VISIBLE)
@@ -332,13 +356,13 @@ impl Options {
                         .spacing([GAP, 4.0])
                         .striped(true)
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new("on").size(11.0).weak());
-                            ui.label(egui::RichText::new("at").size(11.0).weak());
-                            ui.label(egui::RichText::new("name").size(11.0).weak());
+                            ui.label(egui::RichText::new(words.column_on).size(11.0).weak());
+                            ui.label(egui::RichText::new(words.column_at).size(11.0).weak());
+                            ui.label(egui::RichText::new(words.column_name).size(11.0).weak());
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("sends").size(11.0).weak());
+                                ui.label(egui::RichText::new(words.column_sends).size(11.0).weak());
                                 ui.add_space(address_width - 34.0);
-                                ui.label(egui::RichText::new("value").size(11.0).weak())
+                                ui.label(egui::RichText::new(words.column_value).size(11.0).weak())
                                     .on_hover_text(
                                         "The argument that goes with the address. Resolume treats 1 \
                                          as \"do it\" and 0 as \"undo it\"; a fader would take the \
@@ -361,7 +385,7 @@ impl Options {
                                             .desired_width(at_width)
                                             .font(egui::TextStyle::Monospace),
                                     )
-                                    .on_hover_text("HH:MM:SS:FF — a semicolon before the frames means drop frame")
+                                    .on_hover_text(words.at_tooltip)
                                     .changed()
                                 {
                                     if let Some(parsed) = parse_timecode(&text) {
@@ -377,9 +401,9 @@ impl Options {
                                     )
                                     .changed();
 
-                                changed |= action_editor(ui, &mut cue.action, address_width);
+                                changed |= action_editor(ui, &mut cue.action, words, address_width);
 
-                                if ui.small_button("remove").clicked() {
+                                if ui.small_button(words.remove).clicked() {
                                     remove = Some(index);
                                 }
                                 ui.end_row();
@@ -390,7 +414,7 @@ impl Options {
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("Add cue").clicked() {
+            if ui.button(words.add_cue).clicked() {
                 let next = cues.iter().map(|cue| cue.id).max().unwrap_or(0) + 1;
                 cues.push(cue::Cue::new(
                     next,
@@ -403,14 +427,14 @@ impl Options {
                 ));
                 changed = true;
             }
-            if ui.button("Save to file").clicked() {
-                match save_cues(&self.cue_path, &cues) {
-                    Ok(()) => self.message = Some(format!("written to {}", self.cue_path)),
+            if ui.button(words.save_to_file).clicked() {
+                match save_cues(&self.cue_path, &cues, words) {
+                    Ok(()) => self.message = Some(words.written_to.replace("{}", &self.cue_path)),
                     Err(error) => self.message = Some(error),
                 }
             }
             if runner.is_armed() {
-                hint(ui, "editing re-arms every cue and re-syncs");
+                hint(ui, words.editing_rearms);
             }
         });
 
@@ -423,61 +447,77 @@ impl Options {
         }
     }
 
-    fn timing_section(&mut self, ui: &mut egui::Ui, runner: &mut Runner) {
-        section(ui, "Timing");
+    fn timing_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        section(ui, words.section_timing);
         grid(ui, "timing", |ui| {
-            label(ui, "Offset");
+            label(ui, words.offset);
             ui.horizontal(|ui| {
                 let mut offset = runner.offset_frames();
                 if ui
                     .add(
                         egui::DragValue::new(&mut offset)
                             .range(-50..=50)
-                            .suffix(" frames"),
+                            .suffix(words.frames_suffix),
                     )
                     .changed()
                 {
                     runner.set_offset_frames(offset);
                 }
-                hint(ui, "positive fires early, to cancel the delay of the card, the network and the far end");
+                hint(ui, words.offset_hint);
             });
             ui.end_row();
 
-            label(ui, "Freewheel");
+            label(ui, words.freewheel);
             ui.horizontal(|ui| {
                 let mut freewheel = runner.freewheel_frames();
                 if ui
                     .add(
                         egui::DragValue::new(&mut freewheel)
                             .range(0..=120)
-                            .suffix(" frames"),
+                            .suffix(words.frames_suffix),
                     )
                     .changed()
                 {
                     runner.set_freewheel_frames(freewheel);
                 }
-                hint(ui, "how long to keep counting after the signal goes; the trade uses eight to forty");
+                hint(ui, words.freewheel_hint);
             });
             ui.end_row();
         });
     }
 }
 
-fn appearance_section(ui: &mut egui::Ui, presentation: &mut Presentation) {
-    section(ui, "Appearance");
+fn appearance_section(
+    ui: &mut egui::Ui,
+    presentation: &mut Presentation,
+    language: &mut crate::text::Language,
+    words: &'static crate::text::Text,
+) {
+    section(ui, words.section_appearance);
     grid(ui, "appearance", |ui| {
-        label(ui, "Status display");
+        label(ui, words.status_display);
         ui.horizontal(|ui| {
             ui.selectable_value(presentation, Presentation::Pablo, "Pablo");
-            ui.selectable_value(presentation, Presentation::Plain, "Transport marks");
+            ui.selectable_value(presentation, Presentation::Plain, words.transport_marks);
+        });
+        ui.end_row();
+    });
+    grid(ui, "language", |ui| {
+        label(ui, words.language_label);
+        ui.horizontal(|ui| {
+            for entry in crate::text::Text::all() {
+                ui.selectable_value(language, entry.language, entry.language.name());
+            }
         });
         ui.end_row();
     });
     ui.add_space(2.0);
-    hint(
-        ui,
-        "Both say exactly the same five things. One is a little guitarist and the other is not.",
-    );
+    hint(ui, words.appearance_hint);
 }
 
 /// The ask, and who did what.
@@ -485,29 +525,17 @@ fn appearance_section(ui: &mut egui::Ui, presentation: &mut Presentation) {
 /// Kept honest and kept short. The software is free and stays free; what is
 /// being asked for is a contribution from people who use it to earn a living,
 /// and there is no nagging, no timer and nothing withheld if nobody pays.
-fn support_section(ui: &mut egui::Ui) {
-    section(ui, "Support this");
-    ui.label(
-        egui::RichText::new(
-            "Chasefire is free software and always will be — source, licence, all of it. \
-             There is no trial, no expiry and nothing switched off if you never pay a penny.",
-        )
-        .size(12.0),
-    );
+fn support_section(ui: &mut egui::Ui, words: &'static crate::text::Text) {
+    section(ui, words.section_support);
+    ui.label(egui::RichText::new(words.support_free).size(12.0));
     ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(
-            "If it earns you money, a one-off contribution keeps it being worked on. \
-             Pay what you think it is worth, once. Never a subscription.",
-        )
-        .size(12.0),
-    );
+    ui.label(egui::RichText::new(words.support_ask).size(12.0));
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         // Deliberately a button and not a link buried in a sentence. Somebody
         // who has decided to pay should not have to hunt for where.
         let donate = egui::Button::new(
-            egui::RichText::new("Donate")
+            egui::RichText::new(words.donate)
                 .size(14.0)
                 .strong()
                 .color(egui::Color32::WHITE),
@@ -522,15 +550,15 @@ fn support_section(ui: &mut egui::Ui) {
         ui.add_space(GAP);
         ui.vertical(|ui| {
             ui.hyperlink_to("mrbolster.app", HOME_PAGE);
-            hint(ui, "downloads and everything else");
+            hint(ui, words.downloads);
         });
     });
 
     ui.add_space(GAP);
-    section(ui, "About");
+    section(ui, words.section_about);
 
     grid(ui, "about", |ui| {
-        label(ui, "Version");
+        label(ui, words.version);
         ui.horizontal(|ui| {
             // Straight from the manifest, so it can never disagree with what
             // was actually built. Somebody reporting a fault will be reading
@@ -540,49 +568,46 @@ fn support_section(ui: &mut egui::Ui) {
                     .monospace()
                     .strong(),
             );
-            hint(ui, "chase timecode, fire cues");
+            hint(ui, words.version_hint);
         });
         ui.end_row();
 
-        label(ui, "Built for");
-        ui.label("live shows: LTC in, cues out, on the machine you already own");
+        label(ui, words.built_for);
+        ui.label(words.built_for_value);
         ui.end_row();
 
-        label(ui, "Written by");
+        label(ui, words.written_by);
         ui.label("Leo Bolster");
         ui.end_row();
 
-        label(ui, "Pablo drawn by");
-        ui.label("commissioned pixel art");
+        label(ui, words.art_by);
+        ui.label(words.art_by_value);
         ui.end_row();
 
-        label(ui, "Licence");
+        label(ui, words.licence);
         ui.horizontal(|ui| {
             ui.label("GPL-3.0-or-later");
-            hint(ui, "the source is open and stays open");
+            hint(ui, words.licence_hint);
         });
         ui.end_row();
 
-        label(ui, "Source");
+        label(ui, words.source);
         ui.hyperlink_to(
             "github.com/mr-bolster/chasefire",
             "https://github.com/mr-bolster/chasefire",
         );
         ui.end_row();
 
-        label(ui, "Settings live in");
+        label(ui, words.settings_live_in);
         ui.label(
             egui::RichText::new(crate::settings::Settings::location())
                 .size(11.0)
                 .monospace(),
         )
-        .on_hover_text(
-            "Put a file called chasefire.json next to the executable and it will be used instead — \
-             for a stick that travels with its own setup.",
-        );
+        .on_hover_text(words.portable_hint);
         ui.end_row();
 
-        label(ui, "Standing on");
+        label(ui, words.standing_on);
         ui.label(egui::RichText::new("egui · cpal · SMPTE 12M-1, read the hard way").size(12.0));
         ui.end_row();
     });
@@ -629,7 +654,12 @@ fn shorten(text: &str, room: usize) -> String {
 
 /// Edit whatever a cue does. Only OSC exists so far, so this is one row; when
 /// MIDI arrives it becomes a choice of kind and then its own fields.
-fn action_editor(ui: &mut egui::Ui, action: &mut cue::Action, width: f32) -> bool {
+fn action_editor(
+    ui: &mut egui::Ui,
+    action: &mut cue::Action,
+    words: &'static crate::text::Text,
+    width: f32,
+) -> bool {
     match action {
         cue::Action::Osc { address, args } => {
             let mut changed = false;
@@ -640,10 +670,7 @@ fn action_editor(ui: &mut egui::Ui, action: &mut cue::Action, width: f32) -> boo
                 if let Some(cue::OscArg::Int(value)) = args.first_mut() {
                     changed |= ui
                         .add(egui::DragValue::new(value))
-                        .on_hover_text(
-                            "The value sent with the address. For Resolume, 1 triggers and 0 \
-                             releases; for something like a fader it would be the level.",
-                        )
+                        .on_hover_text(words.value_tooltip)
                         .changed();
                 }
             });
@@ -677,10 +704,73 @@ fn parse_timecode(text: &str) -> Option<ltc::Timecode> {
     timecode.is_plausible().then_some(timecode)
 }
 
-fn save_cues(path: &str, cues: &[cue::Cue]) -> Result<(), String> {
+fn save_cues(
+    path: &str,
+    cues: &[cue::Cue],
+    words: &'static crate::text::Text,
+) -> Result<(), String> {
     if path.trim().is_empty() {
-        return Err("no file name — type one in the box above".into());
+        return Err(words.no_file_name.into());
     }
     let text = serde_json::to_string_pretty(cues).map_err(|error| error.to_string())?;
     std::fs::write(path, text).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Measure a string the way egui will actually draw it, using egui's own
+    /// font stack. Character counts are not good enough here: "Frames por
+    /// segundo" and "Status display" are the same length and different widths.
+    fn width_on_screen(text: &str, size: f32) -> f32 {
+        let context = egui::Context::default();
+        // One frame so the fonts exist. Nothing is drawn.
+        let _ = context.run_ui(egui::RawInput::default(), |_| {});
+        context
+            .fonts_mut(|fonts| {
+                fonts.layout_no_wrap(
+                    text.to_string(),
+                    egui::FontId::proportional(size),
+                    egui::Color32::WHITE,
+                )
+            })
+            .rect
+            .width()
+    }
+
+    #[test]
+    fn every_label_fits_its_column_in_every_language() {
+        // The labels sit in a fixed-width column so the fields line up. A
+        // translation that is wider than the column does not push anything
+        // along — it gets cut off, and somebody reads half a word in a dark
+        // room. Spanish runs about a fifth longer than English, so this is the
+        // check that has to exist before a third language is ever added.
+        for words in crate::text::Text::all() {
+            for label in [
+                words.device,
+                words.channel,
+                words.frame_rate,
+                words.file,
+                words.offset,
+                words.freewheel,
+                words.status_display,
+                words.language_label,
+                words.version,
+                words.built_for,
+                words.written_by,
+                words.art_by,
+                words.licence,
+                words.source,
+                words.settings_live_in,
+                words.standing_on,
+            ] {
+                let width = width_on_screen(label, 12.0);
+                assert!(
+                    width <= LABEL,
+                    "'{label}' needs {width:.0}px and the column is {LABEL:.0}px"
+                );
+            }
+        }
+    }
 }
