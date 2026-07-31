@@ -26,14 +26,13 @@ const CUE_ROW: f32 = 23.0;
 /// How many cues should be visible without scrolling when there is room.
 const CUES_VISIBLE: f32 = 20.0;
 
-/// Where the money goes — by way of the site, on purpose.
+/// Where the money goes. Straight there, one click, no detour through a page
+/// that only exists to hold a link.
 ///
-/// Not a payment address baked into the binary. Two reasons, and both are
-/// worth more than the one click it costs: an address in a public repository
-/// is an address harvesters will find, and a payment provider that changes
-/// would otherwise mean shipping a new build to everybody who has this one.
-/// The page can be edited in an afternoon; a released binary cannot.
-pub const DONATE_URL: &str = "https://mrbolster.app/donate";
+/// A paypal.me handle and not an email address, which matters: the handle is
+/// public by design and made to be shared, while an email address in a public
+/// repository is an address that harvesters will find.
+pub const DONATE_URL: &str = "https://paypal.me/mrbolster";
 const HOME_PAGE: &str = "https://mrbolster.app";
 
 /// Rates worth offering, and what each is called on a spec sheet.
