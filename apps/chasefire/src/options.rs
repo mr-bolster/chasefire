@@ -37,6 +37,12 @@ const DEST: f32 = 76.0;
 /// margin on both sides, and the indent the section headings put on their
 /// contents.
 const CHROME: f32 = 100.0;
+/// What the settings window spends above the cue list — the input and output
+/// sections — and below it, on the buttons and the legend. Measured from the
+/// window rather than guessed, and only used to choose an opening size: it
+/// costs nothing if it drifts a little.
+const ABOVE_THE_LIST: f32 = 350.0;
+const BELOW_THE_LIST: f32 = 90.0;
 /// The picker that says what sort of message a line carries.
 const KIND: f32 = 74.0;
 /// The smallest each elastic column may become. Below these a field stops
@@ -56,8 +62,9 @@ const WARNING: egui::Color32 = egui::Color32::from_rgb(150, 62, 40);
 /// by somebody who is not going to lean in to count tick marks.
 const LIVE: egui::Color32 = egui::Color32::from_rgb(38, 122, 62);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(132, 46, 42);
-/// How many cues should be visible without scrolling when there is room.
-const CUES_VISIBLE: f32 = 20.0;
+/// How many lines of the cue list are visible without scrolling when there is
+/// room. Lines, not cues: a cue that sends two messages takes two of them.
+const CUES_VISIBLE: f32 = 25.0;
 
 /// Where the money goes. Straight there, one click, no detour through a page
 /// that only exists to hold a link.
@@ -241,8 +248,13 @@ impl Options {
             // Tall enough that twenty cues fit without scrolling, and wide
             // enough that an OSC address is readable without dragging it out.
             // Wide enough that a cue with a long OSC address and a couple of
-            // arguments reads without dragging anything.
-            .with_inner_size([Widths::narrowest(true) + CHROME + 120.0, 860.0])
+            // arguments reads without dragging anything, and tall enough that
+            // the whole visible run of the cue list is there on opening rather
+            // than being scrolled to.
+            .with_inner_size([
+                Widths::narrowest(true) + CHROME + 120.0,
+                ABOVE_THE_LIST + CUE_ROW * CUES_VISIBLE + BELOW_THE_LIST,
+            ])
             // Narrow enough to be dragged out of the way, wide enough that the
             // cue table still draws every field at a size somebody can click.
             // Below this the list scrolls sideways rather than shrinking things
