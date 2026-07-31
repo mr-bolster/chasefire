@@ -59,8 +59,8 @@ fn main() -> eframe::Result {
         .map(|path| (path, startup.screenshot_after));
 
     let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([382.0, 188.0])
-        .with_min_inner_size([360.0, 180.0])
+        .with_inner_size([404.0, 182.0])
+        .with_min_inner_size([396.0, 178.0])
         .with_always_on_top()
         .with_title("Chasefire");
 
@@ -209,167 +209,214 @@ impl eframe::App for Window {
         let situation = self.runner.situation();
         let mood = Mood::read(situation);
 
-        {
-            ui.horizontal(|ui| {
-                self.pablo
-                    .show(ui, mood, self.presentation, self.runner.since_last_frame());
+        // One set of measurements for the whole window, and one width that
+        // everything else is derived from. Asking egui for the space left over
+        // inside a nested layout gives a different answer at every depth, which
+        // is how things end up hanging off the right-hand edge.
+        const MARGIN: f32 = 10.0;
+        const GAP: f32 = 8.0;
+        const ROW: f32 = 30.0;
+        let full = ui.available_width();
+        let content = full - MARGIN * 2.0;
+        let pablo_width = 96.0;
+        let column = content - pablo_width - GAP;
 
-                ui.vertical(|ui| {
-                    ui.add_space(4.0);
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(MARGIN);
+            self.pablo
+                .show(ui, mood, self.presentation, self.runner.since_last_frame());
+            ui.add_space(GAP);
 
-                    // The one thing that has to be readable across a dark
-                    // room, so it gets every pixel the layout can spare.
-                    ui.label(
-                        egui::RichText::new(self.timecode_text())
-                            .monospace()
-                            .size(40.0)
-                            .strong(),
-                    );
+            ui.vertical(|ui| {
+                // The only thing that has to be legible across a dark room.
+                ui.label(
+                    egui::RichText::new(self.timecode_text())
+                        .monospace()
+                        .size(40.0)
+                        .strong(),
+                );
 
-                    // What kind of timecode, and how fast. Two different
-                    // questions, both answered at a glance, both sitting where
-                    // the eye already is after reading the numbers.
-                    let source = match (self.runner.source(), self.runner.frame_rate()) {
-                        (Some(source), Some(rate)) => {
-                            format!("{}  ·  {rate:.2} fps", source.label())
-                        }
-                        (Some(source), None) => format!("{}  ·  — fps", source.label()),
-                        (None, _) => "no input".to_string(),
-                    };
-                    ui.label(
-                        egui::RichText::new(source)
-                            .size(12.0)
-                            .strong()
-                            .color(egui::Color32::from_rgb(190, 195, 205)),
-                    );
+                let width = column;
 
+                // What is being read, and what state it is in: two answers on
+                // one line, pushed to opposite ends so neither has to be hunted.
+                ui.allocate_ui(egui::vec2(width, 16.0), |ui| {
                     ui.horizontal(|ui| {
-                        let (red, green, blue) = mood.colour();
+                        // Otherwise egui's own item spacing is added on top of
+                        // the distances set here, and every row overflows by
+                        // exactly as much as it has widgets.
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let source = match (self.runner.source(), self.runner.frame_rate()) {
+                            (Some(source), Some(rate)) => {
+                                format!("{}  ·  {rate:.2} fps", source.label())
+                            }
+                            (Some(source), None) => format!("{}  ·  — fps", source.label()),
+                            (None, _) => "no input".to_string(),
+                        };
                         ui.label(
-                            egui::RichText::new(mood.describe())
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(red, green, blue)),
+                            egui::RichText::new(source)
+                                .size(12.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(185, 190, 200)),
                         );
+                        // The short word, not the sentence: it balances against
+                        // the source on the left instead of running off the
+                        // edge. The full sentence is a hover away, and Pablo is
+                        // saying the same thing in pictures anyway.
+                        let (red, green, blue) = mood.colour();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(mood.badge())
+                                    .size(12.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(red, green, blue)),
+                            )
+                            .on_hover_text(mood.describe());
+                        });
+                    });
+                });
 
-                        // How long until the next cue. Colour tightens as it
-                        // approaches, so it is noticed without being read.
-                        if let Some((name, seconds)) = self.runner.countdown() {
+                // The countdown gets a line of its own. After the timecode it
+                // is the number people actually want, and squeezing it in
+                // beside something else was what made this look thrown together.
+                ui.allocate_ui(egui::vec2(width, 20.0), |ui| {
+                    match self.runner.countdown() {
+                        Some((name, seconds)) => {
                             let colour = if seconds < 3.0 {
                                 egui::Color32::from_rgb(235, 110, 90)
                             } else if seconds < 10.0 {
                                 egui::Color32::from_rgb(235, 170, 70)
                             } else {
-                                egui::Color32::from_rgb(150, 155, 165)
+                                egui::Color32::from_rgb(140, 145, 155)
                             };
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "> {}  {seconds:.1}s",
-                                            trim_to(&name, 14)
-                                        ))
-                                        .size(11.0)
-                                        .strong()
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                ui.label(
+                                    egui::RichText::new(format!("next  {}", trim_to(&name, 16)))
+                                        .size(13.0)
                                         .color(colour),
-                                    );
-                                },
-                            );
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{seconds:.1}s"))
+                                                .size(13.0)
+                                                .strong()
+                                                .color(colour),
+                                        );
+                                    },
+                                );
+                            });
                         }
-                    });
-
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        let armed = self.runner.is_armed();
-                        let label = if armed { "ARMED" } else { "DISARMED" };
-                        let colour = if armed {
-                            egui::Color32::from_rgb(70, 200, 110)
-                        } else {
-                            egui::Color32::from_rgb(210, 150, 40)
-                        };
-                        let button = egui::Button::new(
-                            egui::RichText::new(label)
-                                .strong()
-                                .color(egui::Color32::BLACK),
-                        )
-                        .fill(colour)
-                        // The only way to arm or disarm, on purpose. There is
-                        // no keyboard shortcut and there should not be: this
-                        // window sits above everything else, so it can take
-                        // focus without anyone noticing, and a stray space bar
-                        // that silently disarms a running show is a worse
-                        // problem than having to aim at a button.
-                        // Big enough to hit without looking, then.
-                        .min_size(egui::vec2(120.0, 32.0));
-
-                        if ui.add(button).clicked() {
-                            self.runner.set_armed(!armed);
+                        None => {
+                            ui.label(egui::RichText::new("no cue ahead").size(13.0).weak());
                         }
+                    }
+                });
+            });
+            ui.add_space(MARGIN);
+        });
 
-                        if ui
-                            .add(egui::Button::new("Options").min_size(egui::vec2(80.0, 32.0)))
-                            .clicked()
-                        {
-                            self.note("Options: not built yet".into());
-                        }
+        ui.add_space(3.0);
 
-                        // Always-on-top is the whole reason this window exists,
-                        // but somebody will want it off while they work.
-                        let pin = if self.always_on_top { "📌" } else { "📍" };
-                        if ui
-                            .add(egui::Button::new(pin).min_size(egui::vec2(32.0, 32.0)))
-                            .on_hover_text("Keep this window above the others")
-                            .clicked()
-                        {
-                            self.always_on_top = !self.always_on_top;
-                            let level = if self.always_on_top {
-                                egui::WindowLevel::AlwaysOnTop
-                            } else {
-                                egui::WindowLevel::Normal
-                            };
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
-                        }
-                    });
+        // The buttons span the whole width, not just the column beside Pablo.
+        // The one that matters is the panic button, and it should be the
+        // largest thing on screen after the timecode.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(MARGIN);
+            let pin_width = 36.0;
+            let options_width = 88.0;
+            let arm_width = content - pin_width - options_width - GAP * 2.0;
+
+            let armed = self.runner.is_armed();
+            let (label, colour) = if armed {
+                ("ARMED", egui::Color32::from_rgb(70, 200, 110))
+            } else {
+                ("DISARMED", egui::Color32::from_rgb(210, 150, 40))
+            };
+            // The only way to arm or disarm, on purpose. There is no keyboard
+            // shortcut and there should not be: this window sits above
+            // everything else, so it can take focus without anyone noticing,
+            // and a stray key that silently disarms a running show is a worse
+            // problem than having to aim at a button.
+            let button = egui::Button::new(
+                egui::RichText::new(label)
+                    .size(15.0)
+                    .strong()
+                    .color(egui::Color32::BLACK),
+            )
+            .fill(colour)
+            .min_size(egui::vec2(arm_width, ROW));
+            if ui.add(button).clicked() {
+                self.runner.set_armed(!armed);
+            }
+
+            ui.add_space(GAP);
+            if ui
+                .add(egui::Button::new("Options").min_size(egui::vec2(options_width, ROW)))
+                .clicked()
+            {
+                self.note("Options: not built yet".into());
+            }
+
+            ui.add_space(GAP);
+            let pin = if self.always_on_top { "PIN" } else { "pin" };
+            if ui
+                .add(egui::Button::new(pin).min_size(egui::vec2(pin_width, ROW)))
+                .on_hover_text("Keep this window above the others")
+                .clicked()
+            {
+                self.always_on_top = !self.always_on_top;
+                let level = if self.always_on_top {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                };
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(0.0);
+
+        // The footer, split. Left: what this is wired to, so nobody has to
+        // remember. Right: what just happened.
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(MARGIN);
+            let half = (content - GAP) * 0.5;
+
+            ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
+                ui.vertical(|ui| {
+                    ui.label(small(&match self.runner.device_name() {
+                        Some(name) => format!(
+                            "in   {}  ch {}",
+                            shorten(name),
+                            self.runner.channel().unwrap_or(1)
+                        ),
+                        None => "in   —".to_string(),
+                    }));
+                    ui.label(small(&match self.runner.output_target() {
+                        Some(target) => format!("out  OSC {target}"),
+                        None => "out  —".to_string(),
+                    }));
                 });
             });
 
-            // The bottom strip, split in two. On the left, what this thing is
-            // wired to — nobody staring at a corner of a screen for six hours
-            // should have to remember which card and which machine they picked.
-            // On the right, what just happened.
-            ui.add_space(2.0);
-            ui.separator();
-            ui.horizontal_top(|ui| {
-                ui.add_space(2.0);
-                let half = (ui.available_width() - 10.0) * 0.5;
-
-                ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(small(&match self.runner.device_name() {
-                            Some(name) => format!(
-                                "in  {}  ch {}",
-                                shorten(name),
-                                self.runner.channel().unwrap_or(1)
-                            ),
-                            None => "in  —".to_string(),
-                        }));
-                        ui.label(small(&match self.runner.output_target() {
-                            Some(target) => format!("out  OSC {target}"),
-                            None => "out  —".to_string(),
-                        }));
-                    });
-                });
-
-                ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
-                    ui.vertical(|ui| {
-                        for line in &self.log {
-                            ui.label(small(line));
-                        }
-                    });
+            ui.add_space(GAP);
+            ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
+                ui.vertical(|ui| {
+                    for line in &self.log {
+                        ui.label(small(line));
+                    }
                 });
             });
-        }
+        });
 
         if let Some((path, remaining)) = &mut self.screenshot {
             *remaining -= context.input(|input| input.stable_dt);
