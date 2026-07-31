@@ -42,12 +42,18 @@ const CHROME: f32 = 100.0;
 const AT_FLOOR: f32 = 96.0;
 const NAME_FLOOR: f32 = 100.0;
 const ADDRESS_FLOOR: f32 = 140.0;
-/// The remove button at the end of a cue row.
-const REMOVE: f32 = 62.0;
+/// The little button that takes one message off a cue.
+const DROP_STEP: f32 = 24.0;
+/// The tick that picks a cue out for duplicating or deleting.
+const PICK: f32 = 22.0;
 /// One row of the cue list, near enough, for working out how many fit.
 const CUE_ROW: f32 = 23.0;
 /// The colour a button turns when the next click destroys something.
 const WARNING: egui::Color32 = egui::Color32::from_rgb(150, 62, 40);
+/// A cue that will fire, and one that will not. Read from an angle, in a hurry,
+/// by somebody who is not going to lean in to count tick marks.
+const LIVE: egui::Color32 = egui::Color32::from_rgb(38, 122, 62);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(132, 46, 42);
 /// How many cues should be visible without scrolling when there is room.
 const CUES_VISIBLE: f32 = 20.0;
 
@@ -82,6 +88,10 @@ pub struct Options {
     osc_target: String,
     /// What the next output added will be called. Cues address outputs by name.
     osc_name: String,
+    /// Which cues are ticked, by id rather than by position: the list gets
+    /// edited and reordered underneath, and a selection that follows row
+    /// numbers ends up pointing at the wrong cues.
+    selected: std::collections::HashSet<u32>,
     cue_path: String,
     /// What the next click on that button would destroy, if anything. Set on
     /// the first click and cleared by the second, so a save that overwrites and
@@ -97,6 +107,8 @@ enum Danger {
     Overwrite(String),
     /// Start an empty list, losing the cues currently loaded.
     Discard(usize),
+    /// Throw away the cues that are ticked.
+    DeleteCues(usize),
 }
 
 impl Options {
@@ -115,6 +127,7 @@ impl Options {
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
             osc_name: String::new(),
+            selected: std::collections::HashSet::new(),
             cue_path: cues.unwrap_or_else(|| {
                 crate::cuefile::untitled(&crate::cuefile::default_directory(), "cues")
                     .to_string_lossy()
@@ -166,9 +179,15 @@ impl Options {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(context.style().as_ref()).inner_margin(MARGIN))
                 .show(context, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        self.contents(ui, runner, presentation, language);
-                    });
+                    // Never shrink to fit: a scroll area that sizes itself
+                    // to its content, whose content sizes itself to the scroll
+                    // area, settles wherever it happened to start. The table
+                    // came out two thirds of the window wide and stayed there.
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.contents(ui, runner, presentation, language);
+                        });
                 });
             if context.input(|input| input.viewport().close_requested()) {
                 still_open = false;
@@ -445,7 +464,6 @@ impl Options {
     ) {
         let mut cues = runner.cues().to_vec();
         let mut changed = false;
-        let mut remove_cue = None;
         let mut remove_step = None;
         // Measured **here**, where the rows are actually drawn, not up at the
         // panel: the section indents its contents, and handing the table the
@@ -470,6 +488,7 @@ impl Options {
         } else {
             egui::ScrollArea::both()
                 .max_height(CUE_ROW * CUES_VISIBLE)
+                .auto_shrink([false, false])
                 .id_salt("cuelist")
                 .show(ui, |ui| {
                     // Laid out by hand rather than with a Grid, and not for
@@ -481,6 +500,7 @@ impl Options {
                     // Rows of our own break the loop: each one is told its
                     // widths outright.
                     row(ui, |ui| {
+                        heading(ui, words.column_pick, PICK);
                         heading(ui, words.column_on, TICK);
                         heading(ui, words.column_at, at_width);
                         heading(ui, words.column_name, name_width);
@@ -509,10 +529,52 @@ impl Options {
                                     // happen at one moment, and the moment is
                                     // written once. The columns are still
                                     // allocated, so everything stays in step.
-                                    cell(ui, TICK, |ui| {
-                                        if first {
-                                            changed |= ui.checkbox(&mut cue.enabled, "").changed();
+                                    cell(ui, PICK, |ui| {
+                                        if !first {
+                                            return;
                                         }
+                                        let mut picked = self.selected.contains(&cue.id);
+                                        if ui
+                                            .checkbox(&mut picked, "")
+                                            .on_hover_text(words.pick_tooltip)
+                                            .changed()
+                                        {
+                                            if picked {
+                                                self.selected.insert(cue.id);
+                                            } else {
+                                                self.selected.remove(&cue.id);
+                                            }
+                                        }
+                                    });
+                                    gap(ui);
+
+                                    cell(ui, TICK, |ui| {
+                                        if !first {
+                                            return;
+                                        }
+                                        // Green for armed, red for not. A cue
+                                        // list gets read in a hurry and from an
+                                        // angle, and whether a line will fire
+                                        // is the one thing that has to be
+                                        // legible without leaning in.
+                                        let colour = if cue.enabled { LIVE } else { MUTED };
+                                        let widgets = &mut ui.visuals_mut().widgets;
+                                        for widget in [
+                                            &mut widgets.inactive,
+                                            &mut widgets.hovered,
+                                            &mut widgets.active,
+                                        ] {
+                                            widget.bg_fill = colour;
+                                            widget.weak_bg_fill = colour;
+                                        }
+                                        changed |= ui
+                                            .checkbox(&mut cue.enabled, "")
+                                            .on_hover_text(if cue.enabled {
+                                                words.enabled_tooltip
+                                            } else {
+                                                words.disabled_tooltip
+                                            })
+                                            .changed();
                                     });
                                     gap(ui);
 
@@ -587,24 +649,17 @@ impl Options {
                                     });
                                     gap(ui);
 
-                                    cell(ui, REMOVE, |ui| {
-                                        let size = ui.available_size();
-                                        if first {
-                                            if ui
-                                                .add_sized(
-                                                    size,
-                                                    egui::Button::new(
-                                                        egui::RichText::new(words.remove)
-                                                            .size(11.0),
-                                                    ),
-                                                )
-                                                .on_hover_text(words.remove_cue)
-                                                .clicked()
-                                            {
-                                                remove_cue = Some(index);
-                                            }
-                                        } else if ui
-                                            .add_sized(size, egui::Button::new("−"))
+                                    // Always "take this message away", never
+                                    // "take the cue away": a whole cue goes by
+                                    // ticking it and using the button under the
+                                    // list, so there are never two ways to do
+                                    // the same thing sitting side by side.
+                                    cell(ui, DROP_STEP, |ui| {
+                                        if steps < 2 {
+                                            return;
+                                        }
+                                        if ui
+                                            .add_sized(ui.available_size(), egui::Button::new("−"))
                                             .on_hover_text(words.remove_message)
                                             .clicked()
                                         {
@@ -647,6 +702,53 @@ impl Options {
                 ));
                 changed = true;
             }
+
+            // What the ticks are for. Both buttons say how many they would
+            // take, so nobody has to count ticks before pressing one.
+            let picked: Vec<usize> = cues
+                .iter()
+                .enumerate()
+                .filter(|(_, cue)| self.selected.contains(&cue.id))
+                .map(|(index, _)| index)
+                .collect();
+            let any = !picked.is_empty();
+
+            let duplicate = egui::Button::new(if any {
+                words.duplicate.replace("{}", &picked.len().to_string())
+            } else {
+                words.duplicate_none.to_string()
+            });
+            if ui
+                .add_enabled(any, duplicate)
+                .on_hover_text(words.duplicate_tooltip)
+                .clicked()
+            {
+                duplicate_picked(&mut cues, &picked, words.copy_suffix);
+                changed = true;
+            }
+
+            let asking_delete = matches!(self.about_to, Some(Danger::DeleteCues(_)));
+            let mut delete = egui::Button::new(if asking_delete {
+                words.delete_sure.replace("{}", &picked.len().to_string())
+            } else if any {
+                words.delete_picked.replace("{}", &picked.len().to_string())
+            } else {
+                words.delete_none.to_string()
+            });
+            if asking_delete {
+                delete = delete.fill(WARNING);
+            }
+            if ui.add_enabled(any, delete).clicked() {
+                if asking_delete {
+                    self.about_to = None;
+                    cues.retain(|cue| !self.selected.contains(&cue.id));
+                    self.selected.clear();
+                    changed = true;
+                } else {
+                    self.about_to = Some(Danger::DeleteCues(picked.len()));
+                }
+            }
+
             let asking = self.about_to == Some(Danger::Overwrite(self.cue_path.clone()));
             let label = if asking {
                 words
@@ -683,10 +785,6 @@ impl Options {
             }
         });
 
-        if let Some(index) = remove_cue {
-            cues.remove(index);
-            changed = true;
-        }
         if let Some((cue_index, step_index)) = remove_step {
             // The last message of a cue is not removable: a cue that sends
             // nothing is a line in the list that looks armed and does nothing
@@ -915,7 +1013,7 @@ impl Widths {
     /// gaps between all of it.
     fn fixed(show_destination: bool) -> f32 {
         let destination = if show_destination { DEST + GAP } else { 0.0 };
-        TICK + ADD_STEP + REMOVE + destination + GAP * 5.0
+        PICK + TICK + ADD_STEP + DROP_STEP + destination + GAP * 6.0
     }
 
     /// The narrowest the table can be drawn with every field still usable.
@@ -955,6 +1053,27 @@ impl Widths {
     #[cfg(test)]
     pub fn whole_row(&self, show_destination: bool) -> f32 {
         Self::fixed(show_destination) + self.at + self.name + self.address + self.args
+    }
+}
+
+/// Copy the ticked cues, each one landing right after the cue it came from.
+///
+/// Walked backwards on purpose. Done forwards, every insertion shifts the
+/// positions still to be visited and the wrong cues get copied — with two
+/// ticks it copies the first one twice.
+fn duplicate_picked(cues: &mut Vec<cue::Cue>, picked: &[usize], suffix: &str) {
+    let mut next = cues.iter().map(|cue| cue.id).max().unwrap_or(0);
+    for index in picked.iter().rev() {
+        next += 1;
+        let mut copy = cues[*index].clone();
+        copy.id = next;
+        copy.name = format!("{} {}", copy.name, suffix);
+        // The copy arrives switched off. It lands at the same timecode as the
+        // cue it came from, and two cues firing at the same instant is almost
+        // never what somebody meant — better a red tick to turn on than a
+        // surprise on the night.
+        copy.enabled = false;
+        cues.insert(index + 1, copy);
     }
 }
 
@@ -1334,19 +1453,62 @@ mod tests {
         );
     }
 
+    fn three_cues() -> Vec<cue::Cue> {
+        (1..=3)
+            .map(|number| {
+                cue::Cue::new(
+                    number,
+                    format!("cue {number}"),
+                    ltc::Timecode::new(10, 0, number as u8, 0),
+                    cue::Message::Osc {
+                        address: "/go".into(),
+                        args: vec![],
+                    },
+                )
+            })
+            .collect()
+    }
+
     #[test]
-    fn the_buttons_at_the_end_of_a_row_fit_their_words() {
-        // They sit in a fixed column so the lines stay in step, which means a
-        // word too wide for it gets cut rather than pushing anything along.
-        // "quitar" is wider than "remove", and it was being cut.
-        for words in crate::text::Text::all() {
-            let width = width_on_screen(words.remove, 11.0);
-            assert!(
-                width <= REMOVE - 10.0,
-                "'{}' needs {width:.0}px and the button is {REMOVE:.0}px",
-                words.remove
-            );
-        }
+    fn duplicating_several_copies_the_ones_that_were_ticked() {
+        let mut cues = three_cues();
+        // The first and the last. Done forwards, the second insertion would
+        // land on the copy of the first instead of on cue 3.
+        duplicate_picked(&mut cues, &[0, 2], "(copia)");
+
+        let names: Vec<&str> = cues.iter().map(|cue| cue.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["cue 1", "cue 1 (copia)", "cue 2", "cue 3", "cue 3 (copia)"],
+            "each copy should sit right after the cue it came from"
+        );
+
+        let ids: std::collections::HashSet<u32> = cues.iter().map(|cue| cue.id).collect();
+        assert_eq!(ids.len(), cues.len(), "two cues ended up with the same id");
+    }
+
+    #[test]
+    fn a_copy_arrives_switched_off() {
+        // It lands at the same timecode as the cue it came from. Two cues
+        // firing at the same instant is almost never what anybody meant, and
+        // the red tick says so at a glance.
+        let mut cues = three_cues();
+        duplicate_picked(&mut cues, &[1], "(copia)");
+        assert_eq!(cues[2].at, cues[1].at);
+        assert!(!cues[2].enabled, "the copy came back armed");
+        assert!(cues[1].enabled, "the original was disturbed");
+    }
+
+    #[test]
+    fn deleting_goes_by_id_rather_than_by_row() {
+        // Selection is held by id on purpose: the list is edited and reordered
+        // underneath it, and a selection that follows row numbers deletes the
+        // wrong cues.
+        let mut cues = three_cues();
+        let picked: std::collections::HashSet<u32> = [1, 3].into_iter().collect();
+        cues.retain(|cue| !picked.contains(&cue.id));
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].id, 2);
     }
 
     #[test]
