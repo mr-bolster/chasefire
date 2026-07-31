@@ -9,7 +9,7 @@
 use chase::{Chaser, Signal};
 use cue::{Cue, Engine, Firing};
 use ltc::Timecode;
-use sink::{MidiSink, NetworkMidiSink, OscSink, Outputs};
+use sink::{MidiSink, MtcClock, NetworkMidiSink, OscSink, Outputs};
 use std::time::Instant;
 
 /// Whether the input is actually delivering anything.
@@ -105,6 +105,9 @@ pub struct Runner {
     outputs: Outputs,
     /// Set when timecode is arriving from somewhere other than the sound card.
     external_source: Option<Source>,
+    /// Sending the timecode we are chasing back out as MIDI Time Code, when
+    /// somebody asked for that. It keeps its own clock on its own thread.
+    mtc: Option<MtcClock>,
     /// What the single OSC destination is called when nobody has named any.
     /// Cues that name nowhere land here, so a one-machine show never has to
     /// learn that outputs have names at all.
@@ -135,6 +138,7 @@ impl Runner {
             engine: Engine::new(nominal_fps),
             outputs: Outputs::new(),
             external_source: None,
+            mtc: None,
             default_osc: None,
             pinned_fps: None,
             settled: false,
@@ -257,6 +261,24 @@ impl Runner {
         let sink = NetworkMidiSink::start(name, port, peer)?;
         self.outputs.put(name, Box::new(sink));
         Ok(())
+    }
+
+    /// Start sending MIDI Time Code out of a port.
+    ///
+    /// This is the program's other job: a rig with LTC on a cable and a machine
+    /// that only speaks MTC has a hole in it, and this fills it.
+    pub fn start_mtc(&mut self, port: &str) -> Result<(), String> {
+        self.mtc = Some(MtcClock::start(port)?);
+        Ok(())
+    }
+
+    pub fn stop_mtc(&mut self) {
+        self.mtc = None;
+    }
+
+    /// Which port MTC is going out of, if it is.
+    pub fn mtc_port(&self) -> Option<&str> {
+        self.mtc.as_ref().map(|clock| clock.port())
     }
 
     pub fn disconnect_output(&mut self, name: &str) -> bool {
@@ -493,6 +515,7 @@ impl Runner {
             if let Some(tick) = self.chaser.on_frame(&frame) {
                 self.current = Some(tick.timecode);
                 self.last_frame_at = Some(Instant::now());
+                self.tell_the_mtc_clock(tick.timecode);
                 let fired = self.engine.update(tick.timecode, tick.reverse);
                 self.deliver(fired, &mut events);
             }
@@ -520,12 +543,18 @@ impl Runner {
             match self.chaser.on_missing_frame() {
                 Some(tick) => {
                     self.current = Some(tick.timecode);
+                    self.tell_the_mtc_clock(tick.timecode);
                     let fired = self.engine.update(tick.timecode, tick.reverse);
                     self.deliver(fired, &mut events);
                 }
                 None => {
                     if self.current.is_some() {
                         events.push(Event::SignalLost);
+                    }
+                    // Stop the clock rather than let it free-run: a machine
+                    // still receiving MTC believes the show is still going.
+                    if let Some(clock) = &self.mtc {
+                        clock.lost();
                     }
                     self.engine.signal_lost();
                     self.current = None;
@@ -546,11 +575,18 @@ impl Runner {
     pub fn accept_timecode(&mut self, at: Timecode, source: Source) -> Vec<Event> {
         self.external_source = Some(source);
         self.current = Some(at);
+        self.tell_the_mtc_clock(at);
         self.last_frame_at = Some(Instant::now());
         let mut events = Vec::new();
         let fired = self.engine.update(at, false);
         self.deliver(fired, &mut events);
         events
+    }
+
+    fn tell_the_mtc_clock(&self, at: Timecode) {
+        if let Some(clock) = &self.mtc {
+            clock.at(at, self.frame_rate().unwrap_or(25.0));
+        }
     }
 
     /// Send everything a fired cue asked for.

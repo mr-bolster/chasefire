@@ -471,6 +471,44 @@ impl Options {
             });
             ui.end_row();
         });
+        ui.add_space(6.0);
+
+        // The program's other job. A rig with LTC on a cable and a machine that
+        // only speaks MTC has a hole in it; this fills it, and somebody who
+        // needs only that never has to programme a cue at all.
+        grid(ui, "mtc", |ui| {
+            label(ui, words.mtc);
+            ui.horizontal(|ui| {
+                let running = runner.mtc_port().map(|port| port.to_string());
+                match &running {
+                    Some(port) => {
+                        ui.label(egui::RichText::new(shorten(port, 30)).size(11.0));
+                        if ui.button(words.stop).clicked() {
+                            runner.stop_mtc();
+                            self.message = Some(words.mtc_stopped.into());
+                        }
+                    }
+                    None => {
+                        let ready = self.midi_port.is_some();
+                        if ui
+                            .add_enabled(ready, egui::Button::new(words.mtc_send))
+                            .clicked()
+                        {
+                            let port = self.midi_port.clone().unwrap_or_default();
+                            match runner.start_mtc(&port) {
+                                Ok(()) => {
+                                    self.message = Some(words.mtc_sending.replace("{}", &port))
+                                }
+                                Err(error) => self.message = Some(error),
+                            }
+                        }
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        ui.add_space(2.0);
+        hint(ui, words.mtc_note);
         ui.add_space(2.0);
         if self.midi_ports.is_empty() {
             hint(ui, words.no_midi_ports_hint);

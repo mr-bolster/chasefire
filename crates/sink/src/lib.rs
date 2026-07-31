@@ -5,9 +5,12 @@
 //! to fire — that argument was settled in the `cue` crate — they only send.
 
 pub mod midi;
+pub mod mtc;
+pub mod mtc_clock;
 pub mod network;
 
 pub use midi::MidiSink;
+pub use mtc_clock::MtcClock;
 pub use network::NetworkMidiSink;
 
 use cue::{Carrier, Message, OscArg, Step};

@@ -2544,6 +2544,7 @@ name = "sink"
 version = "0.1.0"
 dependencies = [
  "cue",
+ "ltc",
  "midir",
  "rtpmidi",
 ]

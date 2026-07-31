@@ -40,6 +40,10 @@ struct Startup {
     arm: bool,
     /// Show the transport marks instead of the little guitarist.
     sober: bool,
+    /// Send MIDI Time Code out of this port from the moment it starts. For a
+    /// machine whose whole job is to convert, booting with nobody in front of
+    /// it.
+    mtc: Option<String>,
     /// Open the settings window straight away. For a machine being set up, and
     /// for anybody who would rather start where the work is.
     options: bool,
@@ -69,6 +73,7 @@ fn parse_startup() -> Startup {
         demo_flash: value("--demo-flash"),
         arm: arguments.iter().any(|argument| argument == "--arm"),
         sober: arguments.iter().any(|argument| argument == "--sober"),
+        mtc: value("--mtc"),
         options: arguments.iter().any(|argument| argument == "--options"),
     }
 }
@@ -397,6 +402,13 @@ impl Window {
             // Not fatal, and deliberately so. No sound card is a thing to say
             // in the window, not a reason for the window to vanish.
             Err(error) => notes.push(startup_words.audio_error(&error)),
+        }
+
+        if let Some(port) = &startup.mtc {
+            match runner.start_mtc(port) {
+                Ok(()) => notes.push(startup_words.mtc_sending.replace("{}", port)),
+                Err(error) => notes.push(error),
+            }
         }
 
         // Written once on the way in, not only when something later changes.

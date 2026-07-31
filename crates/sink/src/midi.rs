@@ -182,6 +182,18 @@ impl MidiSink {
     pub fn port(&self) -> &str {
         &self.port
     }
+
+    /// Put bytes on the port as they are.
+    ///
+    /// For the things that are MIDI but are not a cue: quarter-frames, and the
+    /// full-frame position that goes with them. They have no place in the cue
+    /// model — nobody programmes a quarter-frame — but they still have to go
+    /// down the same wire.
+    pub fn send_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.connection
+            .send(bytes)
+            .map_err(|error| io::Error::other(error.to_string()))
+    }
 }
 
 impl Sink for MidiSink {
