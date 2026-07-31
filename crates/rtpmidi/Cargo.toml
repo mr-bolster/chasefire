@@ -1,6 +1,6 @@
 [package]
-name = "sink"
-description = "Outputs for fired cues: OSC today, MIDI and RTP-MIDI next"
+name = "rtpmidi"
+description = "RTP-MIDI (AppleMIDI) sessions: MIDI over a network with nothing to install"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,3 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-cue = { path = "../cue" }
-midir = "0.10"
-rtpmidi = { path = "../rtpmidi" }

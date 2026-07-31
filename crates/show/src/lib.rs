@@ -9,7 +9,7 @@
 use chase::{Chaser, Signal};
 use cue::{Cue, Engine, Firing};
 use ltc::Timecode;
-use sink::{MidiSink, OscSink, Outputs};
+use sink::{MidiSink, NetworkMidiSink, OscSink, Outputs};
 use std::time::Instant;
 
 /// Whether the input is actually delivering anything.
@@ -232,6 +232,29 @@ impl Runner {
     /// Open a local MIDI port under a name cues can address.
     pub fn connect_midi_as(&mut self, name: &str, port: &str) -> Result<(), String> {
         let sink = MidiSink::open(port)?;
+        self.outputs.put(name, Box::new(sink));
+        Ok(())
+    }
+
+    /// Start an RTP-MIDI session under a name cues can address.
+    ///
+    /// With a `peer` this end invites; without, it waits to be invited, which
+    /// is what a Mac or rtpMIDI does when somebody presses Connect over there.
+    pub fn connect_network_midi_as(
+        &mut self,
+        name: &str,
+        port: u16,
+        peer: Option<&str>,
+    ) -> Result<(), String> {
+        let peer = match peer {
+            Some(text) if !text.trim().is_empty() => Some(
+                text.trim()
+                    .parse()
+                    .map_err(|_| format!("'{}' is not an address and a port", text.trim()))?,
+            ),
+            _ => None,
+        };
+        let sink = NetworkMidiSink::start(name, port, peer)?;
         self.outputs.put(name, Box::new(sink));
         Ok(())
     }

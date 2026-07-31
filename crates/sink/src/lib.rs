@@ -5,8 +5,10 @@
 //! to fire — that argument was settled in the `cue` crate — they only send.
 
 pub mod midi;
+pub mod network;
 
 pub use midi::MidiSink;
+pub use network::NetworkMidiSink;
 
 use cue::{Carrier, Message, OscArg, Step};
 use std::io;

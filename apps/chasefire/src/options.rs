@@ -90,6 +90,10 @@ pub struct Options {
     osc_target: String,
     /// What the next output added will be called. Cues address outputs by name.
     osc_name: String,
+    /// What a new RTP-MIDI session will be called, listen on, and invite.
+    rtp_name: String,
+    rtp_port: u16,
+    rtp_peer: String,
     /// The MIDI ports this machine has, listed once because asking is slow.
     midi_ports: Vec<String>,
     ports_listed: bool,
@@ -188,6 +192,10 @@ impl Options {
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
             osc_name: String::new(),
+            rtp_name: String::new(),
+            // The port everything in this trade defaults to.
+            rtp_port: 5004,
+            rtp_peer: String::new(),
             midi_ports: Vec::new(),
             ports_listed: false,
             midi_port: None,
@@ -393,11 +401,7 @@ impl Options {
             // fits their rig needs to know what it will and will not do, and
             // finding that out by not finding a setting is a poor way to learn.
             Carrier::Midi => self.midi_outputs(ui, runner, words),
-            Carrier::Network => {
-                hint(ui, words.midi_not_built);
-                ui.add_space(4.0);
-                hint(ui, words.rtp_note);
-            }
+            Carrier::Network => self.network_outputs(ui, runner, words),
         }
     }
 
@@ -473,6 +477,68 @@ impl Options {
         } else {
             hint(ui, words.midi_note);
         }
+    }
+
+    /// RTP-MIDI sessions.
+    ///
+    /// Nothing to install and no virtual cable: a Mac has this in Audio MIDI
+    /// Setup, an iPad has it, Companion speaks it, and on Windows it is what
+    /// rtpMIDI provides. Which end invites is not ours to choose, so both are
+    /// offered — leave the address empty and it waits to be invited.
+    fn network_outputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        grid(ui, "rtp-outputs", |ui| {
+            label(ui, words.add_output);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.rtp_name)
+                        .desired_width(80.0)
+                        .hint_text(words.output_name),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.rtp_port)
+                        .range(1024..=65534)
+                        .prefix(words.rtp_port_prefix),
+                )
+                .on_hover_text(words.rtp_port_tooltip);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.rtp_peer)
+                        .desired_width(FIELD - 90.0)
+                        .hint_text(words.rtp_peer_hint),
+                );
+                if ui.button(words.connect).clicked() {
+                    let name = if self.rtp_name.trim().is_empty() {
+                        "red".to_string()
+                    } else {
+                        self.rtp_name.trim().to_string()
+                    };
+                    match runner.connect_network_midi_as(
+                        &name,
+                        self.rtp_port,
+                        Some(self.rtp_peer.as_str()),
+                    ) {
+                        Ok(()) => {
+                            self.message = Some(if self.rtp_peer.trim().is_empty() {
+                                words.rtp_waiting.replace("{}", &self.rtp_port.to_string())
+                            } else {
+                                words.sending_to.replace("{}", self.rtp_peer.trim())
+                            });
+                            self.rtp_name.clear();
+                        }
+                        Err(error) => self.message = Some(error),
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        ui.add_space(2.0);
+        hint(ui, words.rtp_note);
+        ui.add_space(2.0);
+        hint(ui, words.rtp_no_journal);
     }
 
     /// The OSC destinations, by name.

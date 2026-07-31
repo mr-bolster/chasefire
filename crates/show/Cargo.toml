@@ -16,3 +16,4 @@ ltc = { path = "../ltc" }
 pablo = { path = "../pablo" }
 sink = { path = "../sink" }
 serde_json = "1"
+rtpmidi = { path = "../rtpmidi" }
