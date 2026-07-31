@@ -25,6 +25,9 @@ struct Startup {
     /// Seconds to wait before taking it, so the shot can catch a running show
     /// rather than an empty window.
     screenshot_after: f32,
+    /// Force a flash on the first frame, so a picture can be taken of it.
+    /// Documentation and eyeballing only — nothing fires here.
+    demo_flash: Option<String>,
 }
 
 fn parse_startup() -> Startup {
@@ -47,6 +50,7 @@ fn parse_startup() -> Startup {
         screenshot_after: value("--screenshot-after")
             .and_then(|text| text.parse().ok())
             .unwrap_or(0.3),
+        demo_flash: value("--demo-flash"),
     }
 }
 
@@ -116,6 +120,54 @@ struct Window {
     /// is enough to see a cue fire and still read what came before it, and not
     /// enough to turn the corner of someone's screen into a log window.
     log: std::collections::VecDeque<String>,
+    /// A wash of colour across the whole window when something fires.
+    flash: Option<Flash>,
+}
+
+/// The window flashing to say a cue went out.
+///
+/// A whole window changing colour is visible from much further away than a
+/// 48-pixel sprite, which is the point: this is for the operator who is looking
+/// somewhere else entirely.
+/// Brief: this happens a lot during a show and must not become a strobe.
+const FIRED_LENGTH: f32 = 0.28;
+/// Longer: a cue that failed is worth interrupting somebody for.
+const FAILED_LENGTH: f32 = 0.9;
+
+#[derive(Clone, Copy)]
+struct Flash {
+    colour: egui::Color32,
+    remaining: f32,
+    length: f32,
+}
+
+impl Flash {
+    /// A cue went out. Brief and gentle — this happens a lot during a show and
+    /// must not become a strobe in the corner of somebody's eye.
+    fn fired() -> Self {
+        Self {
+            colour: egui::Color32::from_rgb(70, 220, 120),
+            remaining: FIRED_LENGTH,
+            length: FIRED_LENGTH,
+        }
+    }
+
+    /// A cue did NOT go out. Longer and stronger, because a cue that failed is
+    /// the one thing in this window worth interrupting somebody for.
+    fn failed() -> Self {
+        Self {
+            colour: egui::Color32::from_rgb(240, 80, 70),
+            remaining: FAILED_LENGTH,
+            length: FAILED_LENGTH,
+        }
+    }
+
+    fn alpha(&self, peak: f32) -> u8 {
+        // Straight up, then a curve down: the eye catches the arrival, and the
+        // fade is slow enough to register without lingering.
+        let through = (self.remaining / self.length).clamp(0.0, 1.0);
+        (through.powf(0.6) * peak) as u8
+    }
 }
 
 impl Window {
@@ -168,6 +220,11 @@ impl Window {
             // A few frames of grace so the layout has settled before the shot.
             screenshot,
             log: notes.into_iter().rev().take(2).collect(),
+            flash: match startup.demo_flash.as_deref() {
+                Some("failed") => Some(Flash::failed()),
+                Some(_) => Some(Flash::fired()),
+                None => None,
+            },
         }
     }
 
@@ -194,9 +251,13 @@ impl eframe::App for Window {
                 Event::Fired { firing, sent } => match sent {
                     Ok(()) => {
                         self.pablo.fire(Runner::flourish_of(&firing));
+                        self.flash = Some(Flash::fired());
                         format!("{} — {}", firing.at, firing.name)
                     }
-                    Err(error) => format!("{} FAILED: {error}", firing.name),
+                    Err(error) => {
+                        self.flash = Some(Flash::failed());
+                        format!("{} FAILED: {error}", firing.name)
+                    }
                 },
                 Event::Locked { fps, nominal } => {
                     format!("locked {fps:.2} fps, counting at {nominal}")
@@ -209,6 +270,28 @@ impl eframe::App for Window {
         let situation = self.runner.situation();
         let mood = Mood::read(situation);
 
+        // Painted before anything else, so it washes behind the content rather
+        // than over the top of the numbers somebody is trying to read.
+        if let Some(flash) = &mut self.flash {
+            flash.remaining -= context.input(|input| input.stable_dt);
+            if flash.remaining <= 0.0 {
+                self.flash = None;
+            } else {
+                let peak = if flash.colour.r() > 200.0 as u8 {
+                    110.0
+                } else {
+                    76.0
+                };
+                let wash = egui::Color32::from_rgba_unmultiplied(
+                    flash.colour.r(),
+                    flash.colour.g(),
+                    flash.colour.b(),
+                    flash.alpha(peak),
+                );
+                ui.painter().rect_filled(ui.max_rect(), 0.0, wash);
+            }
+        }
+
         // One set of measurements for the whole window, and one width that
         // everything else is derived from. Asking egui for the space left over
         // inside a nested layout gives a different answer at every depth, which
@@ -216,13 +299,22 @@ impl eframe::App for Window {
         const MARGIN: f32 = 10.0;
         const GAP: f32 = 8.0;
         const ROW: f32 = 30.0;
-        let full = ui.available_width();
-        let content = full - MARGIN * 2.0;
+        // Measured from the panel's own rectangle, not from "space left over":
+        // available_width changes with whatever has already been placed, which
+        // is how one row ends at 393 and the next at 401.
+        let panel = ui.max_rect();
+        let content = panel.width() - MARGIN * 2.0;
+        let left = panel.left() + MARGIN;
+        let right = panel.right() - MARGIN;
         let pablo_width = 96.0;
         let column = content - pablo_width - GAP;
 
         ui.add_space(2.0);
         ui.horizontal(|ui| {
+            // Same trap as every other row: egui's item spacing is added on top
+            // of the distances set here, so the right-hand column started eight
+            // pixels late and everything in it overhung the margin by eight.
+            ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(MARGIN);
             self.pablo
                 .show(ui, mood, self.presentation, self.runner.since_last_frame());
@@ -380,9 +472,17 @@ impl eframe::App for Window {
             }
         });
 
+        // A rule drawn between the margins. egui's own separator bleeds to the
+        // panel edge, which left it as the only thing in the window not lining
+        // up with everything else.
+        ui.add_space(5.0);
+        let rule = ui.cursor().top();
+        ui.painter().hline(
+            left..=right,
+            rule,
+            egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.4)),
+        );
         ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(0.0);
 
         // The footer, split. Left: what this is wired to, so nobody has to
         // remember. Right: what just happened.
@@ -391,22 +491,56 @@ impl eframe::App for Window {
             ui.add_space(MARGIN);
             let half = (content - GAP) * 0.5;
 
+            // Left: what this is wired to. The labels are a fixed-width column
+            // so the values line up under each other instead of stepping in and
+            // out with the length of the word before them.
             ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
                 ui.vertical(|ui| {
-                    ui.label(small(&match self.runner.device_name() {
-                        Some(name) => format!(
-                            "in   {}  ch {}",
-                            shorten(name),
-                            self.runner.channel().unwrap_or(1)
-                        ),
-                        None => "in   —".to_string(),
-                    }));
-                    ui.label(small(&match self.runner.output_target() {
-                        Some(target) => format!("out  OSC {target}"),
-                        None => "out  —".to_string(),
-                    }));
+                    // add_sized forces the label column to a fixed width;
+                    // allocate_ui only reserves what the content happens to
+                    // use, which with spacing switched off glued "in" straight
+                    // onto the device name.
+                    let mut row = |label: &str, value: String| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.add_sized(
+                                [30.0, 13.0],
+                                egui::Label::new(small(label)).halign(egui::Align::LEFT),
+                            );
+                            ui.label(small(&value));
+                        });
+                    };
+                    row(
+                        "in",
+                        match self.runner.device_name() {
+                            Some(name) => format!(
+                                "{}  ch {}",
+                                shorten(name),
+                                self.runner.channel().unwrap_or(1)
+                            ),
+                            None => "—".to_string(),
+                        },
+                    );
+                    row(
+                        "out",
+                        match self.runner.output_target() {
+                            Some(target) => format!("OSC {target}"),
+                            None => "—".to_string(),
+                        },
+                    );
                 });
             });
+
+            // A hairline between the two halves, placed from the same geometry
+            // as everything else rather than from wherever the cursor happens
+            // to have ended up.
+            let divider = left + half + GAP * 0.5;
+            let top = ui.cursor().top();
+            ui.painter().vline(
+                divider,
+                top..=(top + 26.0),
+                egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.4)),
+            );
 
             ui.add_space(GAP);
             ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
