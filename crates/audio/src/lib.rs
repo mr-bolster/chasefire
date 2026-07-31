@@ -26,15 +26,36 @@ pub enum AudioError {
     NoSuchDevice(String),
     NoDevices,
     Unsupported(String),
+    /// Something else already has this input open.
+    ///
+    /// Worth its own case rather than being left inside a backend string. It is
+    /// one of the most common ways this fails in real life — a DAW left running,
+    /// a meter app, another copy of this program — and the backend's own words
+    /// for it are "ALSA function 'snd_pcm_open' failed with error 'EBUSY'",
+    /// which tells an operator nothing they can act on.
+    Busy(String),
     Backend(String),
 }
 
 impl fmt::Display for AudioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoSuchDevice(name) => write!(f, "no input device called '{name}'"),
+            // Deliberately covers both cases, because from here they are
+            // indistinguishable: ALSA drops a device from the enumeration
+            // entirely while another program holds it, so a card that is merely
+            // busy looks exactly like a card that was never there. Saying only
+            // "no such device" sends people looking for a cable when the real
+            // answer is a DAW they left running.
+            Self::NoSuchDevice(name) => write!(
+                f,
+                "'{name}' is not available — it may be unplugged, or another program may have it open"
+            ),
             Self::NoDevices => write!(f, "no audio input devices at all"),
             Self::Unsupported(what) => write!(f, "the device cannot do that: {what}"),
+            Self::Busy(name) => write!(
+                f,
+                "'{name}' is already in use by another program — close whatever has it, or choose another input"
+            ),
             Self::Backend(message) => write!(f, "audio backend: {message}"),
         }
     }
@@ -79,6 +100,13 @@ pub fn list_input_devices() -> Result<Vec<DeviceInfo>, AudioError> {
         return Err(AudioError::NoDevices);
     }
     Ok(found)
+}
+
+/// Backends do not agree on a code for "somebody else has it", but they all say
+/// the word. Cheap to check, and it turns an unreadable line into an instruction.
+fn looks_busy(message: &str) -> bool {
+    let message = message.to_lowercase();
+    message.contains("busy") || message.contains("in use") || message.contains("ebusy")
 }
 
 /// Pick a sample rate the device can really do, preferring the ones LTC lives at.
@@ -307,11 +335,23 @@ impl Capture {
                 return Err(AudioError::Unsupported(format!("sample format {other:?}")));
             }
         }
-        .map_err(|error| AudioError::Backend(error.to_string()))?;
+        .map_err(|error| {
+            let message = error.to_string();
+            if looks_busy(&message) {
+                AudioError::Busy(name.clone())
+            } else {
+                AudioError::Backend(message)
+            }
+        })?;
 
-        stream
-            .play()
-            .map_err(|error| AudioError::Backend(error.to_string()))?;
+        stream.play().map_err(|error| {
+            let message = error.to_string();
+            if looks_busy(&message) {
+                AudioError::Busy(name.clone())
+            } else {
+                AudioError::Backend(message)
+            }
+        })?;
 
         Ok(Self {
             _stream: stream,

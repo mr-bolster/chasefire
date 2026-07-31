@@ -12,6 +12,39 @@ use ltc::Timecode;
 use sink::{OscSink, Sink};
 use std::time::Instant;
 
+/// Whether the input is actually delivering anything.
+///
+/// Three different ways for a sound card to look fine and give you nothing, and
+/// all three end the same way on screen — no timecode — which is why they are
+/// worth telling apart. Guessing which one it is has cost me an evening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    /// Nothing is open.
+    Closed,
+    /// Open, samples arriving, signal present. Normal.
+    Fine,
+    /// Open, but the audio callback has stopped running. The device is there
+    /// and it is not delivering: usually something took it away.
+    NotDelivering,
+    /// Samples arriving, but nothing on them. Almost always the wrong channel.
+    Silent,
+}
+
+impl Health {
+    /// What to tell the operator, in words they can act on.
+    pub fn describe(self, channel: usize) -> Option<String> {
+        match self {
+            Health::Closed | Health::Fine => None,
+            Health::NotDelivering => {
+                Some("the input stopped delivering audio — has another program taken the card?".into())
+            }
+            Health::Silent => Some(format!(
+                "audio is arriving but channel {channel} is silent — wrong channel, or nothing plugged in?"
+            )),
+        }
+    }
+}
+
 /// Where the timecode is coming from.
 ///
 /// Only one of these is built so far, but the distinction belongs in the model
@@ -72,6 +105,11 @@ pub struct Runner {
     current: Option<Timecode>,
     /// Wall clock of the last accepted frame, for the nod.
     last_frame_at: Option<Instant>,
+    /// Sample counter and when it last moved, for spotting a dead stream.
+    last_sample_count: u64,
+    samples_moved_at: Option<Instant>,
+    /// When the level was last above the noise floor.
+    signal_seen_at: Option<Instant>,
     error: Option<String>,
 }
 
@@ -89,6 +127,9 @@ impl Runner {
             freewheel_ticks: 0,
             current: None,
             last_frame_at: None,
+            last_sample_count: 0,
+            samples_moved_at: None,
+            signal_seen_at: None,
             error: None,
         }
     }
@@ -125,9 +166,19 @@ impl Runner {
         device: Option<&str>,
         channel: usize,
     ) -> Result<(), audio::AudioError> {
-        let capture = audio::Capture::open(device, channel, self.pinned_fps)?;
+        let capture = match audio::Capture::open(device, channel, self.pinned_fps) {
+            Ok(capture) => capture,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return Err(error);
+            }
+        };
         self.samples_per_frame = capture.sample_rate() as f64 / self.pinned_fps.unwrap_or(25.0);
         self.last_good_sample = capture.samples_processed();
+        self.last_sample_count = self.last_good_sample;
+        let now = Instant::now();
+        self.samples_moved_at = Some(now);
+        self.signal_seen_at = Some(now);
         self.capture = Some(capture);
         self.error = None;
         Ok(())
@@ -194,6 +245,35 @@ impl Runner {
         // The offset fires cues early, so the wait is shorter by exactly that.
         let frames = frames - self.engine.offset_frames() as i64;
         Some((cue.name.clone(), frames.max(0) as f64 / rate))
+    }
+
+    /// Whether the input is delivering, and if not, which way it is failing.
+    pub fn health(&self) -> Health {
+        let Some(capture) = &self.capture else {
+            return Health::Closed;
+        };
+        // A stream whose sample counter has not moved for a second is not a
+        // stream. Anything above about a hundred milliseconds is already far
+        // outside normal, so a second is generous and still quick to notice.
+        if let Some(moved) = self.samples_moved_at {
+            if moved.elapsed().as_secs_f32() > 1.0 {
+                return Health::NotDelivering;
+            }
+        }
+        // Samples arriving with nothing on them. Below this the decoder could
+        // not work anyway, so calling it silence is not a judgement call.
+        let quiet = capture
+            .level_dbfs()
+            .map(|level| level < -70.0)
+            .unwrap_or(true);
+        if quiet {
+            if let Some(seen) = self.signal_seen_at {
+                if seen.elapsed().as_secs_f32() > 2.0 {
+                    return Health::Silent;
+                }
+            }
+        }
+        Health::Fine
     }
 
     /// What kind of timecode this is chasing, if anything.
@@ -284,6 +364,23 @@ impl Runner {
             }
             (incoming, capture.samples_processed(), capture.sample_rate())
         };
+
+        // Watch the stream itself, not just what it decodes. A card can be
+        // open and healthy-looking while delivering nothing at all.
+        let now = Instant::now();
+        if samples_seen != self.last_sample_count {
+            self.last_sample_count = samples_seen;
+            self.samples_moved_at = Some(now);
+        }
+        if let Some(capture) = &self.capture {
+            if capture
+                .level_dbfs()
+                .map(|level| level > -70.0)
+                .unwrap_or(false)
+            {
+                self.signal_seen_at = Some(now);
+            }
+        }
 
         let drained = incoming.len();
         for frame in incoming {
@@ -380,6 +477,41 @@ mod tests {
                 args: vec![OscArg::Int(1)],
             },
         )
+    }
+
+    #[test]
+    fn with_nothing_open_it_reports_closed_rather_than_broken() {
+        // A tool that has not been pointed at anything is not faulty, and must
+        // not shout as though it were.
+        let runner = Runner::new(25);
+        assert_eq!(runner.health(), Health::Closed);
+        assert_eq!(runner.health().describe(1), None);
+    }
+
+    #[test]
+    fn each_way_of_failing_says_something_different_and_useful() {
+        // The whole point: three failures that look identical on screen — no
+        // timecode — have to be told apart in words somebody can act on.
+        let delivering = Health::NotDelivering.describe(1).unwrap();
+        let silent = Health::Silent.describe(7).unwrap();
+
+        assert_ne!(delivering, silent);
+        assert!(
+            silent.contains('7'),
+            "the silent-channel message has to name the channel: {silent}"
+        );
+        assert!(
+            delivering.to_lowercase().contains("another program"),
+            "the stalled-stream message should point at the likely cause: {delivering}"
+        );
+        // And neither should read like a stack trace.
+        for message in [&delivering, &silent] {
+            assert!(
+                !message.contains("ALSA"),
+                "backend jargon leaked: {message}"
+            );
+            assert!(!message.contains("Err"), "backend jargon leaked: {message}");
+        }
     }
 
     #[test]

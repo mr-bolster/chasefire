@@ -103,8 +103,14 @@ impl Options {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(context.style().as_ref()).inner_margin(MARGIN))
                 .show(context, |ui| {
+                    // Measured here, from the panel itself, and handed down.
+                    // Asking for "the width still available" inside a scroll
+                    // area inside a grid gives an answer that has nothing to do
+                    // with how wide the window is — the same trap that had
+                    // things hanging off the edge of the main window.
+                    let width = ui.max_rect().width();
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        self.contents(ui, runner, presentation);
+                        self.contents(ui, runner, presentation, width);
                     });
                 });
             if context.input(|input| input.viewport().close_requested()) {
@@ -119,10 +125,11 @@ impl Options {
         ui: &mut egui::Ui,
         runner: &mut Runner,
         presentation: &mut Presentation,
+        width: f32,
     ) {
         self.input_section(ui, runner);
         self.outputs_section(ui, runner);
-        self.cues_section(ui, runner);
+        self.cues_section(ui, runner, width);
         self.timing_section(ui, runner);
         appearance_section(ui, presentation);
         support_section(ui);
@@ -264,7 +271,7 @@ impl Options {
         );
     }
 
-    fn cues_section(&mut self, ui: &mut egui::Ui, runner: &mut Runner) {
+    fn cues_section(&mut self, ui: &mut egui::Ui, runner: &mut Runner, width: f32) {
         section(ui, "Cues");
         grid(ui, "cuefile", |ui| {
             label(ui, "File");
@@ -281,7 +288,7 @@ impl Options {
         });
 
         ui.add_space(4.0);
-        self.cue_table(ui, runner);
+        self.cue_table(ui, runner, width);
     }
 
     /// The cue list, editable in place.
@@ -289,7 +296,7 @@ impl Options {
     /// Editing writes straight through to the engine, which re-arms everything
     /// and forgets where it was. That is correct, and it means editing during a
     /// show is a real interruption rather than a quiet one — hence the warning.
-    fn cue_table(&mut self, ui: &mut egui::Ui, runner: &mut Runner) {
+    fn cue_table(&mut self, ui: &mut egui::Ui, runner: &mut Runner, width: f32) {
         let mut cues = runner.cues().to_vec();
         let mut changed = false;
         let mut remove = None;
@@ -299,7 +306,7 @@ impl Options {
         // eleven characters — but cramming it into exactly eleven characters
         // makes it fiddly to click into, so it gets a share too.
         let fixed = 34.0 + 66.0 + 72.0 + GAP * 5.0;
-        let flexible = (ui.available_width() - fixed).max(280.0);
+        let flexible = (width - fixed - 20.0).max(280.0);
         let at_width = (flexible * 0.14).max(96.0);
         let name_width = (flexible * 0.30).max(110.0);
         let address_width = (flexible - at_width - name_width).max(150.0);

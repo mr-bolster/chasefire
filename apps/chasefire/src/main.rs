@@ -65,8 +65,87 @@ fn parse_startup() -> Startup {
     }
 }
 
+/// A port nobody else is likely to want. Binding it is how this program knows
+/// it is the only copy running.
+const ONLY_ONE_PORT: u16 = 49213;
+
+/// Claim the right to be the only instance.
+///
+/// A UDP socket rather than a lock file, and deliberately: a lock file left
+/// behind by a crash blocks every future start until somebody deletes it, and
+/// the person it happens to will be ten minutes from doors. A socket is
+/// released by the operating system the moment the process dies, however it
+/// dies. It also behaves the same on Windows without a line of platform code.
+///
+/// Returned rather than dropped: it has to stay open for the life of the
+/// program, or the claim evaporates.
+fn claim_single_instance() -> Result<std::net::UdpSocket, bool> {
+    match std::net::UdpSocket::bind(("127.0.0.1", ONLY_ONE_PORT)) {
+        Ok(socket) => Ok(socket),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => Err(true),
+        // Something else went wrong — a locked-down machine, an odd network
+        // stack. Not being able to check is no reason to refuse to run.
+        Err(_) => Err(false),
+    }
+}
+
+/// Say so, in a window, and stop.
+///
+/// Exiting silently would be the same sin as the crash that leaves no note:
+/// somebody double-clicks the icon, nothing happens, and they double-click it
+/// again. Two copies fighting over one sound card is exactly the failure this
+/// is here to prevent, so the explanation has to arrive.
+fn complain_already_running() -> eframe::Result {
+    eprintln!("chasefire is already running");
+    eframe::run_native(
+        "Chasefire",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([360.0, 132.0])
+                .with_resizable(false)
+                .with_title("Chasefire"),
+            ..Default::default()
+        },
+        Box::new(|_| Ok(Box::new(AlreadyRunning))),
+    )
+}
+
+struct AlreadyRunning;
+
+impl eframe::App for AlreadyRunning {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        ui.add_space(18.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new("Chasefire is already running")
+                    .size(16.0)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Two copies would fight over the same sound card,\nand neither would read the timecode.",
+                )
+                .size(12.0),
+            );
+            ui.add_space(12.0);
+            if ui.button("Close").clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+    }
+}
+
 fn main() -> eframe::Result {
     install_crash_log();
+
+    // Held for the life of the program: dropping it would give the claim away.
+    let _only_one = match claim_single_instance() {
+        Ok(socket) => Some(socket),
+        Err(true) => return complain_already_running(),
+        Err(false) => None,
+    };
+
     let startup = parse_startup();
     let shoot_to = startup
         .screenshot
@@ -153,6 +232,8 @@ struct Window {
     log: std::collections::VecDeque<String>,
     /// A wash of colour across the whole window when something fires.
     flash: Option<Flash>,
+    /// The last input health reported, so it is said once and not every frame.
+    last_health: show::Health,
     options: options::Options,
 }
 
@@ -275,6 +356,7 @@ impl Window {
             // A few frames of grace so the layout has settled before the shot.
             screenshot,
             log: notes.into_iter().rev().take(2).collect(),
+            last_health: show::Health::Closed,
             options: options::Options::new(
                 startup.device.clone(),
                 startup.channel,
@@ -326,6 +408,17 @@ impl eframe::App for Window {
                 Event::SignalLost => "signal lost".to_string(),
             };
             self.note(line);
+        }
+
+        // Say why there is no timecode, when there is a reason worth saying.
+        // Repeated only when it changes, so a card that is out for ten minutes
+        // does not fill the log with the same line six hundred times.
+        let health = self.runner.health();
+        if health != self.last_health {
+            self.last_health = health;
+            if let Some(message) = health.describe(self.runner.channel().unwrap_or(1)) {
+                self.note(message);
+            }
         }
 
         let situation = self.runner.situation();
@@ -421,7 +514,25 @@ impl eframe::App for Window {
                 // The countdown gets a line of its own. After the timecode it
                 // is the number people actually want, and squeezing it in
                 // beside something else was what made this look thrown together.
+                // An input that will not open is more urgent than a countdown,
+                // and it is long enough that the two-line log truncates it into
+                // uselessness. It goes where the eye already is.
+                let trouble = self
+                    .runner
+                    .error()
+                    .map(str::to_string)
+                    .or_else(|| health.describe(self.runner.channel().unwrap_or(1)));
+
                 ui.allocate_ui(egui::vec2(width, 20.0), |ui| {
+                    if let Some(message) = &trouble {
+                        ui.label(
+                            egui::RichText::new(trim_to(message, 58))
+                                .size(11.5)
+                                .color(egui::Color32::from_rgb(235, 130, 100)),
+                        )
+                        .on_hover_text(message);
+                        return;
+                    }
                     match self.runner.countdown() {
                         Some((name, seconds)) => {
                             let colour = if seconds < 3.0 {
