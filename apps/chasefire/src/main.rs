@@ -5,6 +5,7 @@
 //! Pablo. That is the whole of it, because that is all anyone glances at while
 //! doing three other jobs. Everything else lives behind Options.
 
+mod cuefile;
 mod options;
 mod pablo_view;
 mod reminder;

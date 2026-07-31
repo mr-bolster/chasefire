@@ -29,6 +29,8 @@ const VALUE: f32 = 66.0;
 const REMOVE: f32 = 52.0;
 /// One row of the cue list, near enough, for working out how many fit.
 const CUE_ROW: f32 = 23.0;
+/// The colour a button turns when the next click destroys something.
+const WARNING: egui::Color32 = egui::Color32::from_rgb(150, 62, 40);
 /// How many cues should be visible without scrolling when there is room.
 const CUES_VISIBLE: f32 = 20.0;
 
@@ -62,7 +64,20 @@ pub struct Options {
     pinned_fps: Option<f64>,
     osc_target: String,
     cue_path: String,
+    /// What the next click on that button would destroy, if anything. Set on
+    /// the first click and cleared by the second, so a save that overwrites and
+    /// a new list that discards are both two deliberate clicks and never one.
+    about_to: Option<Danger>,
     message: Option<String>,
+}
+
+/// Something a click is about to throw away.
+#[derive(Debug, Clone, PartialEq)]
+enum Danger {
+    /// Save over a file that is already there.
+    Overwrite(String),
+    /// Start an empty list, losing the cues currently loaded.
+    Discard(usize),
 }
 
 impl Options {
@@ -80,7 +95,12 @@ impl Options {
             channel: channel.max(1),
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
-            cue_path: cues.unwrap_or_default(),
+            cue_path: cues.unwrap_or_else(|| {
+                crate::cuefile::untitled(&crate::cuefile::default_directory(), "cues")
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            about_to: None,
             message: None,
         }
     }
@@ -307,8 +327,19 @@ impl Options {
         grid(ui, "cuefile", |ui| {
             label(ui, words.file);
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.cue_path).desired_width(FIELD));
+                // Typing a different name in here and pressing save is "save
+                // as". There is no separate button for it because there is no
+                // separate thing happening.
+                if ui
+                    .add(egui::TextEdit::singleline(&mut self.cue_path).desired_width(FIELD))
+                    .changed()
+                {
+                    // A path that has been edited is no longer the path that
+                    // was agreed to be overwritten.
+                    self.about_to = None;
+                }
                 if ui.button(words.load).clicked() {
+                    self.about_to = None;
                     match runner.load_cues(std::path::Path::new(&self.cue_path)) {
                         Ok(count) => {
                             self.message = Some(words.cues_loaded.replace("{}", &count.to_string()))
@@ -316,9 +347,38 @@ impl Options {
                         Err(error) => self.message = Some(error),
                     }
                 }
+
+                let loaded = runner.cues().len();
+                let asking = self.about_to == Some(Danger::Discard(loaded));
+                let label = if asking {
+                    words.discard_and_start.replace("{}", &loaded.to_string())
+                } else {
+                    words.new_list.to_string()
+                };
+                let mut button = egui::Button::new(&label);
+                if asking {
+                    button = button.fill(WARNING);
+                }
+                if ui.add(button).clicked() {
+                    if loaded > 0 && !asking {
+                        // Somebody has cues open. Say what would be lost, and
+                        // make them click again.
+                        self.about_to = Some(Danger::Discard(loaded));
+                    } else {
+                        self.about_to = None;
+                        runner.set_cues(Vec::new());
+                        self.cue_path =
+                            crate::cuefile::untitled(&crate::cuefile::default_directory(), "cues")
+                                .to_string_lossy()
+                                .into_owned();
+                        self.message = Some(words.new_list_ready.to_string());
+                    }
+                }
             });
             ui.end_row();
         });
+        ui.add_space(2.0);
+        hint(ui, words.save_as_hint);
 
         ui.add_space(4.0);
         self.cue_table(ui, runner, words, width);
@@ -448,10 +508,35 @@ impl Options {
                 ));
                 changed = true;
             }
-            if ui.button(words.save_to_file).clicked() {
-                match save_cues(&self.cue_path, &cues, words) {
-                    Ok(()) => self.message = Some(words.written_to.replace("{}", &self.cue_path)),
-                    Err(error) => self.message = Some(error),
+            let asking = self.about_to == Some(Danger::Overwrite(self.cue_path.clone()));
+            let label = if asking {
+                words
+                    .overwrite
+                    .replace("{}", &crate::cuefile::name_of(&self.cue_path))
+            } else {
+                words.save_to_file.to_string()
+            };
+            let mut button = egui::Button::new(&label);
+            if asking {
+                button = button.fill(WARNING);
+            }
+            if ui.add(button).clicked() {
+                if crate::cuefile::exists(&self.cue_path) && !asking {
+                    // Overwriting somebody else's show file is the one mistake
+                    // here that cannot be undone, so it costs a second click.
+                    self.about_to = Some(Danger::Overwrite(self.cue_path.clone()));
+                } else {
+                    self.about_to = None;
+                    match crate::cuefile::save(&self.cue_path, &cues, words.no_file_name) {
+                        Ok(()) => {
+                            self.message = Some(
+                                words
+                                    .written_to
+                                    .replace("{}", &crate::cuefile::name_of(&self.cue_path)),
+                            )
+                        }
+                        Err(error) => self.message = Some(error),
+                    }
                 }
             }
             if runner.is_armed() {
@@ -732,18 +817,6 @@ fn parse_timecode(text: &str) -> Option<ltc::Timecode> {
         drop_frame,
     };
     timecode.is_plausible().then_some(timecode)
-}
-
-fn save_cues(
-    path: &str,
-    cues: &[cue::Cue],
-    words: &'static crate::text::Text,
-) -> Result<(), String> {
-    if path.trim().is_empty() {
-        return Err(words.no_file_name.into());
-    }
-    let text = serde_json::to_string_pretty(cues).map_err(|error| error.to_string())?;
-    std::fs::write(path, text).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
