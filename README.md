@@ -54,8 +54,10 @@ cargo build --release
     --osc 192.168.1.50:7000
 ```
 
-Space arms and disarms — the panic button must not depend on hitting a small
-target with a mouse.
+Arming is done with the button and only with the button. There is deliberately
+no keyboard shortcut: the window sits above everything else, so it can take
+focus without anyone noticing, and a stray keypress that silently disarms a
+running show is a worse problem than having to aim at a button.
 
 ## Trying it with no hardware at all
 

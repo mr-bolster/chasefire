@@ -293,7 +293,13 @@ impl eframe::App for Window {
                                 .color(egui::Color32::BLACK),
                         )
                         .fill(colour)
-                        // The panic button. Big enough to hit without looking.
+                        // The only way to arm or disarm, on purpose. There is
+                        // no keyboard shortcut and there should not be: this
+                        // window sits above everything else, so it can take
+                        // focus without anyone noticing, and a stray space bar
+                        // that silently disarms a running show is a worse
+                        // problem than having to aim at a button.
+                        // Big enough to hit without looking, then.
                         .min_size(egui::vec2(120.0, 32.0));
 
                         if ui.add(button).clicked() {
@@ -363,13 +369,6 @@ impl eframe::App for Window {
                     });
                 });
             });
-        }
-
-        // The space bar arms and disarms: the panic button must not need a
-        // mouse, and it must not need the window to be the right size.
-        if context.input(|input| input.key_pressed(egui::Key::Space)) {
-            let armed = self.runner.is_armed();
-            self.runner.set_armed(!armed);
         }
 
         if let Some((path, remaining)) = &mut self.screenshot {
