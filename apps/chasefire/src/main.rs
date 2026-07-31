@@ -496,13 +496,16 @@ impl eframe::App for Window {
             }
 
             ui.add_space(GAP);
+            // The pin takes the arm colour too, so the two lit things in the
+            // row agree instead of arguing: green while the show is live,
+            // amber while it is not, plain when the pin is off.
             let pin_button = if self.always_on_top {
                 egui::Button::new(
                     egui::RichText::new("PIN")
                         .strong()
                         .color(egui::Color32::BLACK),
                 )
-                .fill(egui::Color32::from_rgb(70, 200, 110))
+                .fill(colour)
             } else {
                 egui::Button::new(egui::RichText::new("pin").weak())
             };
@@ -539,28 +542,31 @@ impl eframe::App for Window {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(MARGIN);
-            let half = (content - GAP) * 0.5;
+            // Halves, with the divider down the middle where it belongs.
+            let left_zone = (content - GAP) * 0.5;
+            let right_zone = content - GAP - left_zone;
 
             // Left: what this is wired to. The labels are a fixed-width column
             // so the values line up under each other instead of stepping in and
             // out with the length of the word before them.
-            ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
+            ui.allocate_ui(egui::vec2(left_zone, 30.0), |ui| {
                 ui.vertical(|ui| {
-                    // add_sized forces the label column to a fixed width;
-                    // allocate_ui only reserves what the content happens to
-                    // use, which with spacing switched off glued "in" straight
-                    // onto the device name.
-                    let mut row = |label: &str, value: String| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            ui.add_sized(
-                                [30.0, 13.0],
-                                egui::Label::new(small(label)).halign(egui::Align::LEFT),
-                            );
-                            ui.label(small(&value));
-                        });
+                    // Nothing between the two lines: they are one block of
+                    // information, and the gap left the second one sitting
+                    // lower than its opposite number across the divider.
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    // Plain labels, not rows of widgets. A horizontal layout
+                    // brings its own height with it, which left this column
+                    // taller than the log across the divider and the second
+                    // line sitting lower than its opposite number. Monospace
+                    // does the aligning that the widget row was there for.
+                    let line = |label: &str, value: String| {
+                        egui::RichText::new(format!("{label:<4}{value}"))
+                            .monospace()
+                            .size(10.0)
+                            .weak()
                     };
-                    row(
+                    ui.label(line(
                         "in",
                         match self.runner.device_name() {
                             Some(name) => format!(
@@ -570,21 +576,21 @@ impl eframe::App for Window {
                             ),
                             None => "—".to_string(),
                         },
-                    );
-                    row(
+                    ));
+                    ui.label(line(
                         "out",
                         match self.runner.output_target() {
                             Some(target) => format!("OSC {target}"),
                             None => "—".to_string(),
                         },
-                    );
+                    ));
                 });
             });
 
             // A hairline between the two halves, placed from the same geometry
             // as everything else rather than from wherever the cursor happens
             // to have ended up.
-            let divider = left + half + GAP * 0.5;
+            let divider = left + left_zone + GAP * 0.5;
             let top = ui.cursor().top();
             ui.painter().vline(
                 divider,
@@ -593,13 +599,16 @@ impl eframe::App for Window {
             );
 
             ui.add_space(GAP);
-            ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    // Clipped to its half. A log line long enough to reach
+            ui.allocate_ui(egui::vec2(right_zone, 30.0), |ui| {
+                // Centred in its zone rather than shoved against the divider,
+                // which made the right-hand zone look like an overflow of the
+                // left one instead of a column of its own.
+                ui.vertical_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    // Clipped to its zone. A log line long enough to reach
                     // across the divider makes the split look accidental.
                     for line in &self.log {
-                        ui.label(small(&trim_to(line, 34)));
+                        ui.label(small(&trim_to(line, 30)));
                     }
                 });
             });
