@@ -100,7 +100,7 @@ impl Reminder {
 
                     ui.add_space(14.0);
                     let donate = egui::Button::new(
-                        egui::RichText::new("Chip in")
+                        egui::RichText::new("Donate")
                             .size(15.0)
                             .strong()
                             .color(egui::Color32::WHITE),

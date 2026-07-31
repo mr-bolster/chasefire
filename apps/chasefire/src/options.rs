@@ -507,7 +507,7 @@ fn support_section(ui: &mut egui::Ui) {
         // Deliberately a button and not a link buried in a sentence. Somebody
         // who has decided to pay should not have to hunt for where.
         let donate = egui::Button::new(
-            egui::RichText::new("Chip in")
+            egui::RichText::new("Donate")
                 .size(14.0)
                 .strong()
                 .color(egui::Color32::WHITE),

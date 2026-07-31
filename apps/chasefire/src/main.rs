@@ -237,6 +237,10 @@ struct Window {
     /// The last input health reported, so it is said once and not every frame.
     last_health: show::Health,
     settings: settings::Settings,
+    /// When the settings last differed from what is on disk. Saving is
+    /// deferred a moment so that dragging a value does not write the file
+    /// sixty times a second.
+    settings_dirty_since: Option<std::time::Instant>,
     reminder: reminder::Reminder,
     options: options::Options,
 }
@@ -305,13 +309,48 @@ impl Flash {
 impl Window {
     fn new(startup: Startup, screenshot: Option<(String, f32)>) -> Self {
         // Remembered settings first, then anything said on the command line,
-        // which wins — somebody typing a device name means it.
-        let (settings, settings_note) = settings::Settings::load();
+        // which wins — somebody typing a device name means it. And what they
+        // typed becomes what is remembered, so it does not have to be typed
+        // again tomorrow.
+        let (mut settings, settings_note) = settings::Settings::load();
+        if startup.device.is_some() {
+            settings.device = startup.device.clone();
+        }
+        if let Some(channel) = std::env::args()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|pair| pair[0] == "--channel")
+            .and_then(|pair| pair[1].parse::<usize>().ok())
+        {
+            settings.channel = channel;
+        }
+        if startup.osc.is_some() {
+            settings.osc_target = startup.osc.clone();
+        }
+        if startup.cues.is_some() {
+            settings.cue_file = startup.cues.clone();
+        }
+        if startup.fps.is_some() {
+            settings.frame_rate = startup.fps;
+        }
+        if startup.sober {
+            settings.pablo = false;
+        }
+
+        // From here on the settings are the single source of truth: whatever
+        // was typed has been folded into them, and what was not typed comes
+        // from last time.
+        let device = settings.device.clone();
+        let channel = settings.channel.max(1);
+        let osc = settings.osc_target.clone();
+        let cue_file = settings.cue_file.clone();
         let mut runner = Runner::new(25);
         // Nothing is armed because a window opened. Arming is a decision, and
         // the only way to make it by accident should be to say so out loud.
         runner.set_armed(startup.arm);
-        runner.pin_frame_rate(startup.fps);
+        runner.pin_frame_rate(settings.frame_rate);
+        runner.set_offset_frames(settings.offset_frames);
+        runner.set_freewheel_frames(settings.freewheel_frames);
 
         let mut notes = Vec::new();
         if let Some(note) = settings_note {
@@ -321,7 +360,7 @@ impl Window {
             notes.push("armed from the command line".to_string());
         }
 
-        if let Some(path) = &startup.cues {
+        if let Some(path) = &cue_file {
             match std::fs::read_to_string(path)
                 .map_err(|error| error.to_string())
                 .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
@@ -335,7 +374,7 @@ impl Window {
             }
         }
 
-        if let Some(target) = &startup.osc {
+        if let Some(target) = &osc {
             match runner.connect_osc(target) {
                 // The left-hand strip already shows where it goes, so
                 // only a failure is worth a line in the log.
@@ -347,34 +386,36 @@ impl Window {
         // Open an input straight away. Left to itself it takes the default
         // one, so launching the thing with no arguments still does something
         // rather than sitting there looking broken.
-        match runner.open_input(startup.device.as_deref(), startup.channel) {
+        match runner.open_input(device.as_deref(), channel) {
             Ok(()) => {}
             // Not fatal, and deliberately so. No sound card is a thing to say
             // in the window, not a reason for the window to vanish.
             Err(error) => notes.push(format!("no input: {error}")),
         }
 
+        // Written once on the way in, not only when something later changes.
+        // Otherwise a first run that was given everything on the command line
+        // would remember none of it: nothing had changed, so nothing was saved,
+        // and tomorrow it would all have to be typed again.
+        let _ = settings.save();
+
         Self {
             runner,
             pablo: pablo_view::PabloView::new(),
-            presentation: if startup.sober {
-                Presentation::Plain
+            presentation: if settings.pablo {
+                Presentation::Pablo
             } else {
-                Presentation::default()
+                Presentation::Plain
             },
-            always_on_top: true,
+            always_on_top: settings.always_on_top,
             // A few frames of grace so the layout has settled before the shot.
             screenshot,
             log: notes.into_iter().rev().take(2).collect(),
             last_health: show::Health::Closed,
             reminder: reminder::Reminder::new(settings.reminders_dismissed),
+            settings_dirty_since: None,
             settings,
-            options: options::Options::new(
-                startup.device.clone(),
-                startup.channel,
-                startup.osc.clone(),
-                startup.cues.clone(),
-            ),
+            options: options::Options::new(device.clone(), channel, osc.clone(), cue_file.clone()),
             flash: match startup.demo_flash.as_deref() {
                 Some("failed") => Some(Flash::failed()),
                 Some(_) => Some(Flash::fired()),
@@ -389,18 +430,59 @@ impl Window {
         self.log.truncate(2);
     }
 
+    /// What the settings would be if written right now.
+    fn current_settings(&self) -> settings::Settings {
+        settings::Settings {
+            device: self
+                .runner
+                .device_name()
+                .map(str::to_string)
+                .or_else(|| self.settings.device.clone()),
+            channel: self.runner.channel().unwrap_or(self.settings.channel),
+            frame_rate: self.runner.pinned_frame_rate(),
+            osc_target: self
+                .runner
+                .output_target()
+                .or_else(|| self.settings.osc_target.clone()),
+            cue_file: self.settings.cue_file.clone(),
+            offset_frames: self.runner.offset_frames(),
+            freewheel_frames: self.runner.freewheel_frames(),
+            pablo: self.presentation == Presentation::Pablo,
+            always_on_top: self.always_on_top,
+            reminders_dismissed: self.reminder.dismissed(),
+        }
+    }
+
+    /// Notice a change and write it out shortly after.
+    ///
+    /// Saving only on the way out was not good enough: a process that is killed
+    /// — or a machine that loses power, which happens in venues — never gets
+    /// to run its exit code, and the setting somebody carefully chose an hour
+    /// ago is gone. Watching for changes means the file is right within a
+    /// second of any of them, however the program ends afterwards.
+    fn remember_if_changed(&mut self) {
+        let current = self.current_settings();
+        if current != self.settings {
+            self.settings = current;
+            if self.settings_dirty_since.is_none() {
+                self.settings_dirty_since = Some(std::time::Instant::now());
+            }
+        }
+        // A moment's delay so that dragging a slider writes once, not once per
+        // frame.
+        if let Some(since) = self.settings_dirty_since {
+            if since.elapsed().as_secs_f32() > 0.75 {
+                self.settings_dirty_since = None;
+                self.remember();
+            }
+        }
+    }
+
     /// Write the settings down. Failing to is worth a line in the log and
     /// nothing more: not being able to save a preference is not a reason to
     /// interrupt anybody.
     fn remember(&mut self) {
-        self.settings.device = self.runner.device_name().map(str::to_string);
-        self.settings.channel = self.runner.channel().unwrap_or(1);
-        self.settings.frame_rate = self.runner.pinned_frame_rate();
-        self.settings.osc_target = self.runner.output_target();
-        self.settings.offset_frames = self.runner.offset_frames();
-        self.settings.freewheel_frames = self.runner.freewheel_frames();
-        self.settings.pablo = self.presentation == Presentation::Pablo;
-        self.settings.always_on_top = self.always_on_top;
+        self.settings = self.current_settings();
         if let Err(error) = self.settings.save() {
             self.note(format!("settings not saved: {error}"));
         }
@@ -415,6 +497,16 @@ impl Window {
 }
 
 impl eframe::App for Window {
+    /// Write everything down on the way out.
+    ///
+    /// Saving only when the reminder was closed left a hole: change the input
+    /// device in Options, close the program, and the change was gone. Settings
+    /// that quietly fail to stick are worse than no settings at all, because
+    /// somebody will set them once and then trust them.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.remember();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
         let context = &context;
@@ -771,9 +863,9 @@ impl eframe::App for Window {
         self.reminder
             .update(context.input(|input| input.stable_dt), busy);
         if self.reminder.show(context, options::DONATE_URL) {
-            self.settings.reminders_dismissed = self.reminder.dismissed();
             self.remember();
         }
+        self.remember_if_changed();
 
         // The flash goes on a foreground layer, painted after everything and
         // above it. Behind the content it was almost invisible: the widgets
