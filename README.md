@@ -36,8 +36,16 @@ has spare.
 
 He cannot lie: a test walks every combination of armed, locked, freewheeling and
 signal level, and fails if the face he pulls ever disagrees with whether a cue
-would really go out. He can also be switched off, in which case the same five
-states appear as a colour and a word instead.
+would really go out.
+
+Not everyone wants a cartoon on the screen at work, so `--sober` swaps him for
+the transport symbols the trade already reads without thinking — stop, pause,
+play — animated through the same five states. Same information, same rules, no
+cartoon. The resting mark is also the application's icon.
+
+And when a cue fires the whole window flashes: green when it went out, **red
+when it did not**, longer and stronger, because a cue that failed is the one
+thing here worth interrupting somebody for.
 
 ## Running it
 

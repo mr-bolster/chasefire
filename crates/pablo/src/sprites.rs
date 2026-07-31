@@ -15,9 +15,14 @@
 
 use std::sync::OnceLock;
 
-/// The sheet itself. Replace the file and the app picks it up on rebuild;
-/// [`Sheet::load`] checks it is laid out the way the code expects.
-static SHEET_BYTES: &[u8] = include_bytes!("../assets/pablo.png");
+/// The two skins. Same frames, same order, same rules — one drawn as a little
+/// guitarist, the other as the transport symbols everybody in this trade
+/// already reads without thinking.
+static PABLO_BYTES: &[u8] = include_bytes!("../assets/pablo.png");
+static MARKS_BYTES: &[u8] = include_bytes!("../assets/marks.png");
+
+/// The resting mark, for the window icon and anywhere else an icon is wanted.
+pub static LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
 
 /// Which frames of the sheet belong to which mood, in order.
 pub mod frames {
@@ -103,9 +108,13 @@ pub struct Sheet {
 }
 
 impl Sheet {
-    /// Decode the baked-in sheet. Cheap enough to do at startup and then keep.
-    pub fn load() -> Result<Self, SheetError> {
-        let decoder = png::Decoder::new(SHEET_BYTES);
+    /// Decode one of the baked-in sheets. Cheap enough to do at startup.
+    pub fn load(presentation: crate::Presentation) -> Result<Self, SheetError> {
+        let bytes = match presentation {
+            crate::Presentation::Pablo => PABLO_BYTES,
+            crate::Presentation::Plain => MARKS_BYTES,
+        };
+        let decoder = png::Decoder::new(bytes);
         let mut reader = decoder
             .read_info()
             .map_err(|error| SheetError::Decode(error.to_string()))?;
@@ -150,11 +159,16 @@ impl Sheet {
         })
     }
 
-    /// The one everybody shares. Panics only if the baked-in art is broken,
+    /// The shared copy of a skin. Panics only if the baked-in art is broken,
     /// which is a build-time mistake and is caught by a test.
-    pub fn shared() -> &'static Sheet {
-        static SHEET: OnceLock<Sheet> = OnceLock::new();
-        SHEET.get_or_init(|| Sheet::load().expect("the sprite sheet baked into this binary"))
+    pub fn shared(presentation: crate::Presentation) -> &'static Sheet {
+        static PABLO: OnceLock<Sheet> = OnceLock::new();
+        static MARKS: OnceLock<Sheet> = OnceLock::new();
+        let slot = match presentation {
+            crate::Presentation::Pablo => &PABLO,
+            crate::Presentation::Plain => &MARKS,
+        };
+        slot.get_or_init(|| Sheet::load(presentation).expect("the art baked into this binary"))
     }
 
     /// Size of one frame, in pixels, both ways.
@@ -240,24 +254,45 @@ pub fn frames_for_flourish(flourish: crate::Flourish) -> std::ops::Range<usize> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Mood;
+    use crate::{Mood, Presentation};
 
     #[test]
-    fn the_art_baked_into_this_binary_is_usable() {
+    fn both_skins_baked_into_this_binary_are_usable() {
         // If someone drops in a new sheet that is the wrong shape, this is
-        // where they find out — at build time, not on a stage.
-        let sheet = Sheet::load().expect("sheet should load");
-        assert!(
-            sheet.cell() >= 16,
-            "frames are {}px, too small",
-            sheet.cell()
-        );
-        assert!(sheet.frame_count() >= frames::FLOURISH_NETWORK.end);
+        // where they find out — at build time, not on a stage. Both skins get
+        // checked, because the one nobody is looking at is the one that rots.
+        for presentation in [Presentation::Pablo, Presentation::Plain] {
+            let sheet = Sheet::load(presentation).expect("sheet should load");
+            assert!(
+                sheet.cell() >= 16,
+                "{presentation:?} frames are {}px, too small",
+                sheet.cell()
+            );
+            assert_eq!(
+                sheet.frame_count(),
+                frames::FLOURISH_NETWORK.end,
+                "{presentation:?} has the wrong number of frames"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_skins_are_actually_different_drawings() {
+        // Same layout, same meaning, different art. If someone rebuilds one
+        // sheet from the other's strips by mistake, this catches it.
+        let pablo = Sheet::shared(Presentation::Pablo);
+        let marks = Sheet::shared(Presentation::Plain);
+        let different = (0..pablo.frame_count()).any(|frame| {
+            (0..pablo.cell()).any(|y| {
+                (0..pablo.cell()).any(|x| pablo.pixel(frame, x, y) != marks.pixel(frame, x, y))
+            })
+        });
+        assert!(different, "both skins are the same picture");
     }
 
     #[test]
     fn every_mood_points_at_frames_that_exist() {
-        let sheet = Sheet::shared();
+        let sheet = Sheet::shared(Presentation::Pablo);
         for mood in [
             Mood::Asleep,
             Mood::Pyjamas,
@@ -284,7 +319,7 @@ mod tests {
         // The bursts get a gentler floor on purpose: their first frame is meant
         // to be a couple of specks, and demanding a whole character's worth of
         // pixels there would be demanding the wrong drawing.
-        let sheet = Sheet::shared();
+        let sheet = Sheet::shared(Presentation::Pablo);
         for frame in 0..sheet.frame_count() {
             let visible = (0..sheet.cell())
                 .flat_map(|y| (0..sheet.cell()).map(move |x| (x, y)))
@@ -307,7 +342,7 @@ mod tests {
         // The script that builds the sheet and the ranges here have to agree.
         // They are edited in different files, in different languages, so the
         // only thing keeping them honest is this.
-        let sheet = Sheet::shared();
+        let sheet = Sheet::shared(Presentation::Pablo);
         let claimed: usize = frames::ALL.iter().map(|range| range.len()).sum();
         assert_eq!(
             claimed,

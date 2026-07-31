@@ -19,7 +19,9 @@ fn scale_for(cell: usize) -> usize {
 }
 
 pub struct PabloView {
+    /// Textures per skin, loaded the first time that skin is shown.
     textures: Vec<egui::TextureHandle>,
+    loaded: Option<Presentation>,
     cell: usize,
     /// Which frame of the current loop we are on.
     step: usize,
@@ -32,6 +34,7 @@ impl PabloView {
     pub fn new() -> Self {
         Self {
             textures: Vec::new(),
+            loaded: None,
             cell: 0,
             step: 0,
             last_step_at: 0.0,
@@ -45,11 +48,13 @@ impl PabloView {
         self.strum = Some(Strum::new(flourish));
     }
 
-    fn ensure_loaded(&mut self, ui: &egui::Ui) {
-        if !self.textures.is_empty() {
+    fn ensure_loaded(&mut self, ui: &egui::Ui, presentation: Presentation) {
+        if self.loaded == Some(presentation) {
             return;
         }
-        let sheet = pablo::sprites::Sheet::shared();
+        self.textures.clear();
+        self.loaded = Some(presentation);
+        let sheet = pablo::sprites::Sheet::shared(presentation);
         self.cell = sheet.cell();
         for frame in 0..sheet.frame_count() {
             let image = egui::ColorImage::from_rgba_unmultiplied(
@@ -57,7 +62,7 @@ impl PabloView {
                 &sheet.frame_rgba(frame),
             );
             self.textures.push(ui.ctx().load_texture(
-                format!("pablo-{frame}"),
+                format!("{presentation:?}-{frame}"),
                 image,
                 egui::TextureOptions::NEAREST,
             ));
@@ -81,12 +86,7 @@ impl PabloView {
             }
         }
 
-        if presentation == Presentation::Plain {
-            self.show_plain(ui, mood);
-            return;
-        }
-
-        self.ensure_loaded(ui);
+        self.ensure_loaded(ui, presentation);
         if self.textures.is_empty() {
             self.show_plain(ui, mood);
             return;
@@ -119,8 +119,12 @@ impl PabloView {
         }
         // Shivering has its own drawn frames now, so nothing is faked here.
         let rect = rect.translate(egui::vec2(0.0, offset));
-        ui.painter()
-            .image(self.textures[frame].id(), rect, full_uv(), tint(mood));
+        ui.painter().image(
+            self.textures[frame].id(),
+            rect,
+            full_uv(),
+            tint(mood, presentation),
+        );
 
         // The burst goes over the top, on the same square, stepping through its
         // own frames and fading as it goes.
@@ -170,7 +174,12 @@ fn full_uv() -> egui::Rect {
 
 /// A wash of the mood's colour over him, so the state reads even at a glance
 /// too quick to make out what he is doing.
-fn tint(mood: Mood) -> egui::Color32 {
+fn tint(mood: Mood, presentation: Presentation) -> egui::Color32 {
+    // The transport marks are already drawn in their state's colour. Washing
+    // them again would only mute them.
+    if presentation == Presentation::Plain {
+        return egui::Color32::WHITE;
+    }
     let (red, green, blue) = mood.colour();
     egui::Color32::from_rgba_unmultiplied(
         200u8.saturating_add(red / 5),

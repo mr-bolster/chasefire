@@ -6,7 +6,7 @@ them. The app wants a single strip, which is the sensible way to load them. This
 is the ten lines in between, kept in the repo so that redoing it after a new
 delivery is one command rather than an afternoon of remembering.
 
-    python3 tools/build-sprite-sheet.py <folder-of-strips>
+    python3 tools/build-sprite-sheet.py <folder-of-strips> [output.png]
 
 It checks as it goes: every strip has to be the same cell size, a whole number
 of frames wide, and have the frame count the app expects. A silent mistake here
@@ -32,15 +32,16 @@ ANIMATIONS = [
     ("flourish-network", 4),
 ]
 
-OUTPUT = Path(__file__).resolve().parent.parent / "crates" / "pablo" / "assets" / "pablo.png"
+ASSETS = Path(__file__).resolve().parent.parent / "crates" / "pablo" / "assets"
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3):
         print(__doc__)
         return 2
 
     source = Path(sys.argv[1])
+    output = ASSETS / (sys.argv[2] if len(sys.argv) == 3 else "pablo.png")
     strips = []
     cell = None
 
@@ -80,9 +81,9 @@ def main() -> int:
         print(f"{name:20} {frames:>6}  {offset}..{offset + frames}")
         offset += frames
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(OUTPUT, optimize=True)
-    print(f"\n{OUTPUT}: {total} frames of {cell}x{cell}, {OUTPUT.stat().st_size} bytes")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(output, optimize=True)
+    print(f"\n{output}: {total} frames of {cell}x{cell}, {output.stat().st_size} bytes")
     return 0
 
 

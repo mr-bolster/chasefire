@@ -31,6 +31,8 @@ struct Startup {
     /// the window says ARMED in green either way, and the log says where it
     /// came from.
     arm: bool,
+    /// Show the transport marks instead of the little guitarist.
+    sober: bool,
     /// Force a flash on the first frame, so a picture can be taken of it.
     /// Documentation and eyeballing only — nothing fires here.
     demo_flash: Option<String>,
@@ -58,6 +60,7 @@ fn parse_startup() -> Startup {
             .unwrap_or(0.3),
         demo_flash: value("--demo-flash"),
         arm: arguments.iter().any(|argument| argument == "--arm"),
+        sober: arguments.iter().any(|argument| argument == "--sober"),
     }
 }
 
@@ -69,11 +72,14 @@ fn main() -> eframe::Result {
         .clone()
         .map(|path| (path, startup.screenshot_after));
 
-    let viewport = egui::ViewportBuilder::default()
+    let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([404.0, 182.0])
         .with_min_inner_size([396.0, 178.0])
         .with_always_on_top()
         .with_title("Chasefire");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
 
     eframe::run_native(
         "Chasefire",
@@ -83,6 +89,23 @@ fn main() -> eframe::Result {
         },
         Box::new(move |_context| Ok(Box::new(Window::new(startup, shoot_to)))),
     )
+}
+
+/// The resting mark, decoded for the title bar and the task switcher.
+fn window_icon() -> Option<std::sync::Arc<egui::IconData>> {
+    let decoder = png::Decoder::new(pablo::sprites::LOGO_BYTES);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    // Only RGBA is worth handling: the logo is ours and we know what it is.
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    Some(std::sync::Arc::new(egui::IconData {
+        rgba: buffer[..info.buffer_size()].to_vec(),
+        width: info.width,
+        height: info.height,
+    }))
 }
 
 /// Write down why we died, somewhere findable.
@@ -241,7 +264,11 @@ impl Window {
         Self {
             runner,
             pablo: pablo_view::PabloView::new(),
-            presentation: Presentation::default(),
+            presentation: if startup.sober {
+                Presentation::Plain
+            } else {
+                Presentation::default()
+            },
             always_on_top: true,
             // A few frames of grace so the layout has settled before the shot.
             screenshot,
