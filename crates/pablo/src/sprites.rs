@@ -22,16 +22,41 @@ static SHEET_BYTES: &[u8] = include_bytes!("../assets/pablo.png");
 /// Which frames of the sheet belong to which mood, in order.
 pub mod frames {
     use std::ops::Range;
-    pub const ASLEEP: Range<usize> = 0..4;
-    pub const PYJAMAS: Range<usize> = 4..6;
-    pub const PLAYING: Range<usize> = 6..10;
+    pub const ASLEEP: Range<usize> = 0..8;
+    pub const PYJAMAS: Range<usize> = 8..14;
+    pub const PLAYING: Range<usize> = 14..22;
+    pub const WOBBLING: Range<usize> = 22..28;
+    pub const SHIVERING: Range<usize> = 28..34;
+    pub const FLOURISH_MIDI: Range<usize> = 34..38;
+    pub const FLOURISH_OSC: Range<usize> = 38..42;
+    pub const FLOURISH_NETWORK: Range<usize> = 42..46;
 
-    // Two moods sharing a frame would be a copy-paste slip, and this is the
-    // sort of thing a compiler can check for free. It will not build if the
-    // ranges ever overlap.
+    /// Everything, in the order `tools/build-sprite-sheet.py` lays it out.
+    /// Change one and you must change the other; the script prints the ranges
+    /// it produced so there is no excuse for guessing.
+    pub const ALL: [Range<usize>; 8] = [
+        ASLEEP,
+        PYJAMAS,
+        PLAYING,
+        WOBBLING,
+        SHIVERING,
+        FLOURISH_MIDI,
+        FLOURISH_OSC,
+        FLOURISH_NETWORK,
+    ];
+
+    // Two animations sharing a frame would be a copy-paste slip, and this is
+    // the sort of thing a compiler can check for free: it will not build if the
+    // ranges ever overlap or leave a gap.
     const _: () = {
-        assert!(ASLEEP.end <= PYJAMAS.start);
-        assert!(PYJAMAS.end <= PLAYING.start);
+        assert!(ASLEEP.start == 0);
+        assert!(ASLEEP.end == PYJAMAS.start);
+        assert!(PYJAMAS.end == PLAYING.start);
+        assert!(PLAYING.end == WOBBLING.start);
+        assert!(WOBBLING.end == SHIVERING.start);
+        assert!(SHIVERING.end == FLOURISH_MIDI.start);
+        assert!(FLOURISH_MIDI.end == FLOURISH_OSC.start);
+        assert!(FLOURISH_OSC.end == FLOURISH_NETWORK.start);
     };
 }
 
@@ -110,7 +135,7 @@ impl Sheet {
 
         let cell = height as usize;
         let frame_count = (width / height) as usize;
-        let needed = frames::PLAYING.end;
+        let needed = frames::FLOURISH_NETWORK.end;
         if frame_count < needed {
             return Err(SheetError::TooFewFrames {
                 found: frame_count,
@@ -192,16 +217,23 @@ fn to_rgba(data: &[u8], colour: png::ColorType, depth: png::BitDepth) -> Option<
     })
 }
 
-/// Which frames to cycle through for a mood.
-///
-/// Shivering and wobbling borrow the playing frames — one is that same
-/// animation jittered, the other is it with a question mark over his head —
-/// so neither costs the artist anything.
+/// Which frames to cycle through for a mood. Every mood has its own now.
 pub fn frames_for(mood: crate::Mood) -> std::ops::Range<usize> {
     match mood {
         crate::Mood::Asleep => frames::ASLEEP,
         crate::Mood::Pyjamas => frames::PYJAMAS,
-        crate::Mood::Playing | crate::Mood::Shivering | crate::Mood::Wobbling => frames::PLAYING,
+        crate::Mood::Playing => frames::PLAYING,
+        crate::Mood::Wobbling => frames::WOBBLING,
+        crate::Mood::Shivering => frames::SHIVERING,
+    }
+}
+
+/// The frames of the burst that goes over him when a cue fires.
+pub fn frames_for_flourish(flourish: crate::Flourish) -> std::ops::Range<usize> {
+    match flourish {
+        crate::Flourish::Midi => frames::FLOURISH_MIDI,
+        crate::Flourish::Osc => frames::FLOURISH_OSC,
+        crate::Flourish::NetworkMidi => frames::FLOURISH_NETWORK,
     }
 }
 
@@ -220,7 +252,7 @@ mod tests {
             "frames are {}px, too small",
             sheet.cell()
         );
-        assert!(sheet.frame_count() >= frames::PLAYING.end);
+        assert!(sheet.frame_count() >= frames::FLOURISH_NETWORK.end);
     }
 
     #[test]
@@ -246,15 +278,57 @@ mod tests {
 
     #[test]
     fn no_frame_is_blank() {
-        // A frame of nothing means the sheet slipped a column, which looks
-        // exactly like Pablo vanishing at random. Cheap to rule out.
+        // A frame of nothing means the sheet slipped a column, which on screen
+        // looks exactly like Pablo vanishing at random. Cheap to rule out.
+        //
+        // The bursts get a gentler floor on purpose: their first frame is meant
+        // to be a couple of specks, and demanding a whole character's worth of
+        // pixels there would be demanding the wrong drawing.
         let sheet = Sheet::shared();
         for frame in 0..sheet.frame_count() {
             let visible = (0..sheet.cell())
                 .flat_map(|y| (0..sheet.cell()).map(move |x| (x, y)))
                 .filter(|(x, y)| sheet.pixel(frame, *x, *y)[3] > 0)
                 .count();
-            assert!(visible > 20, "frame {frame} is empty or nearly so");
+            let floor = if frame >= frames::FLOURISH_MIDI.start {
+                1
+            } else {
+                200
+            };
+            assert!(
+                visible >= floor,
+                "frame {frame} has {visible} visible pixels, expected at least {floor}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sheet_holds_exactly_what_the_ranges_claim() {
+        // The script that builds the sheet and the ranges here have to agree.
+        // They are edited in different files, in different languages, so the
+        // only thing keeping them honest is this.
+        let sheet = Sheet::shared();
+        let claimed: usize = frames::ALL.iter().map(|range| range.len()).sum();
+        assert_eq!(
+            claimed,
+            sheet.frame_count(),
+            "the ranges account for {claimed} frames but the sheet holds {}",
+            sheet.frame_count()
+        );
+    }
+
+    #[test]
+    fn every_burst_has_its_own_frames() {
+        use crate::Flourish;
+        let bursts = [Flourish::Midi, Flourish::Osc, Flourish::NetworkMidi];
+        for (index, first) in bursts.iter().enumerate() {
+            for second in &bursts[index + 1..] {
+                assert_ne!(
+                    frames_for_flourish(*first),
+                    frames_for_flourish(*second),
+                    "{first:?} and {second:?} draw the same thing"
+                );
+            }
         }
     }
 }

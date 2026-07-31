@@ -117,25 +117,24 @@ impl PabloView {
                 offset = if beat < 0.25 { -(scale as f32) } else { 0.0 };
             }
         }
-        // Shivering wobbles sideways: same animation, visibly unwell.
-        if mood == Mood::Shivering {
-            let jitter = if (now * 18.0) as i64 % 2 == 0 {
-                1.0
-            } else {
-                -1.0
-            };
-            offset += 0.0;
-            let rect = rect.translate(egui::vec2(jitter, offset));
-            ui.painter()
-                .image(self.textures[frame].id(), rect, full_uv(), tint(mood));
-        } else {
-            let rect = rect.translate(egui::vec2(0.0, offset));
-            ui.painter()
-                .image(self.textures[frame].id(), rect, full_uv(), tint(mood));
-        }
+        // Shivering has its own drawn frames now, so nothing is faked here.
+        let rect = rect.translate(egui::vec2(0.0, offset));
+        ui.painter()
+            .image(self.textures[frame].id(), rect, full_uv(), tint(mood));
 
+        // The burst goes over the top, on the same square, stepping through its
+        // own frames and fading as it goes.
         if let Some(strum) = self.strum {
-            paint_flourish(ui, rect, strum);
+            let range = pablo::sprites::frames_for_flourish(strum.flourish);
+            let through = 1.0 - strum.intensity();
+            let step = ((through * range.len() as f32) as usize).min(range.len() - 1);
+            let fade = (strum.intensity() * 1.6).min(1.0);
+            ui.painter().image(
+                self.textures[range.start + step].id(),
+                rect,
+                full_uv(),
+                egui::Color32::WHITE.gamma_multiply(fade),
+            );
         }
     }
 
@@ -179,25 +178,4 @@ fn tint(mood: Mood) -> egui::Color32 {
         200u8.saturating_add(blue / 5),
         255,
     )
-}
-
-/// The burst when a cue fires, drawn over him and fading.
-fn paint_flourish(ui: &egui::Ui, rect: egui::Rect, strum: Strum) {
-    let intensity = strum.intensity();
-    let colour = match strum.flourish {
-        Flourish::Midi => egui::Color32::from_rgb(240, 200, 60),
-        Flourish::Osc => egui::Color32::from_rgb(90, 200, 230),
-        Flourish::NetworkMidi => egui::Color32::from_rgb(180, 140, 240),
-    };
-    let colour = colour.gamma_multiply(intensity);
-
-    // Until the real art arrives this is drawn rather than blitted: three
-    // marks flying out and up from where the guitar is, growing as they fade.
-    let origin = rect.center() + egui::vec2(rect.width() * 0.15, rect.height() * 0.1);
-    let travel = (1.0 - intensity) * rect.width() * 0.55;
-    for (index, angle) in [-0.9f32, -0.5, -0.1].iter().enumerate() {
-        let position = origin + egui::vec2(angle.cos() * travel, angle.sin() * travel);
-        let radius = 2.0 + index as f32 * 0.6 + (1.0 - intensity) * 2.0;
-        ui.painter().circle_filled(position, radius, colour);
-    }
 }
