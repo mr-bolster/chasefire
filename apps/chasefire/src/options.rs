@@ -294,13 +294,15 @@ impl Options {
         let mut changed = false;
         let mut remove = None;
 
-        // The two text fields share whatever width the window has been given.
-        // Everything else in the row is a fixed size, because a checkbox and a
-        // timecode do not get better for being wider.
-        let fixed = 34.0 + 96.0 + 66.0 + 72.0 + GAP * 5.0;
-        let flexible = (ui.available_width() - fixed).max(200.0);
-        let name_width = flexible * 0.34;
-        let address_width = flexible * 0.66;
+        // Every text field grows with the window, each with a floor below which
+        // it stops being usable. The timecode needs the least — it is always
+        // eleven characters — but cramming it into exactly eleven characters
+        // makes it fiddly to click into, so it gets a share too.
+        let fixed = 34.0 + 66.0 + 72.0 + GAP * 5.0;
+        let flexible = (ui.available_width() - fixed).max(280.0);
+        let at_width = (flexible * 0.14).max(96.0);
+        let name_width = (flexible * 0.30).max(110.0);
+        let address_width = (flexible - at_width - name_width).max(150.0);
 
         if cues.is_empty() {
             hint(ui, "no cues yet — add one below");
@@ -317,7 +319,16 @@ impl Options {
                             ui.label(egui::RichText::new("on").size(11.0).weak());
                             ui.label(egui::RichText::new("at").size(11.0).weak());
                             ui.label(egui::RichText::new("name").size(11.0).weak());
-                            ui.label(egui::RichText::new("does").size(11.0).weak());
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("sends").size(11.0).weak());
+                                ui.add_space(address_width - 34.0);
+                                ui.label(egui::RichText::new("value").size(11.0).weak())
+                                    .on_hover_text(
+                                        "The argument that goes with the address. Resolume treats 1 \
+                                         as \"do it\" and 0 as \"undo it\"; a fader would take the \
+                                         level instead.",
+                                    );
+                            });
                             ui.label("");
                             ui.end_row();
 
@@ -331,9 +342,10 @@ impl Options {
                                 if ui
                                     .add(
                                         egui::TextEdit::singleline(&mut text)
-                                            .desired_width(92.0)
+                                            .desired_width(at_width)
                                             .font(egui::TextStyle::Monospace),
                                     )
+                                    .on_hover_text("HH:MM:SS:FF — a semicolon before the frames means drop frame")
                                     .changed()
                                 {
                                     if let Some(parsed) = parse_timecode(&text) {
@@ -579,7 +591,13 @@ fn action_editor(ui: &mut egui::Ui, action: &mut cue::Action, width: f32) -> boo
                     .add(egui::TextEdit::singleline(address).desired_width(width))
                     .changed();
                 if let Some(cue::OscArg::Int(value)) = args.first_mut() {
-                    changed |= ui.add(egui::DragValue::new(value)).changed();
+                    changed |= ui
+                        .add(egui::DragValue::new(value))
+                        .on_hover_text(
+                            "The value sent with the address. For Resolume, 1 triggers and 0 \
+                             releases; for something like a fader it would be the level.",
+                        )
+                        .changed();
                 }
             });
             changed
