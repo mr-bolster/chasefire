@@ -116,6 +116,51 @@ impl Mood {
     }
 }
 
+/// Whether the corner window shows Pablo or behaves itself.
+///
+/// Some people will not want a cartoon on the screen at work, and that is a
+/// perfectly reasonable thing to want. What it cannot mean is losing the
+/// information: the little man exists to be read at a glance from two metres
+/// away, so switching him off swaps him for something else that can be, not
+/// for nothing. Same moods, same meanings, sober clothes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Presentation {
+    #[default]
+    Pablo,
+    Plain,
+}
+
+impl Mood {
+    /// Colour for this mood, as red/green/blue.
+    ///
+    /// Used to tint Pablo and, with him switched off, as the whole indicator.
+    /// Every mood is a different colour on purpose — see the test — but colour
+    /// is never the only channel: [`Mood::describe`] is always on screen next
+    /// to it, because a fair number of the people who do this job for a living
+    /// cannot tell red from green.
+    pub fn colour(self) -> (u8, u8, u8) {
+        match self {
+            Mood::Asleep => (90, 95, 110),     // slate, obviously idle
+            Mood::Pyjamas => (210, 150, 40),   // amber: awake, not on duty
+            Mood::Playing => (70, 200, 110),   // green, all well
+            Mood::Shivering => (200, 190, 60), // yellow, working but marginal
+            Mood::Wobbling => (230, 120, 50),  // orange, coasting
+        }
+    }
+
+    /// A short word for the sober indicator, where there is no room for a
+    /// sentence and no little man to carry the meaning.
+    pub fn badge(self) -> &'static str {
+        match self {
+            Mood::Asleep => "IDLE",
+            Mood::Pyjamas => "DISARMED",
+            Mood::Playing => "RUNNING",
+            Mood::Shivering => "WEAK",
+            Mood::Wobbling => "COASTING",
+        }
+    }
+}
+
 /// What Pablo throws out of the guitar when a cue fires. Different shapes for
 /// different destinations, so you can tell from across the room whether that
 /// was the lights or the video.
@@ -237,6 +282,47 @@ mod tests {
         // Freewheeling with a weak level: the freewheel is what matters.
         let mood = Mood::read(situation(true, false, true, -58.0));
         assert_eq!(mood, Mood::Wobbling);
+    }
+
+    #[test]
+    fn switching_pablo_off_loses_the_cartoon_and_nothing_else() {
+        // Every mood still has to be tellable apart without him: its own
+        // colour, and its own word. Colour alone would not do — plenty of
+        // people in this trade are colour blind — so the word carries it too.
+        let moods = [
+            Mood::Asleep,
+            Mood::Pyjamas,
+            Mood::Playing,
+            Mood::Shivering,
+            Mood::Wobbling,
+        ];
+
+        for (index, first) in moods.iter().enumerate() {
+            for second in &moods[index + 1..] {
+                assert_ne!(
+                    first.colour(),
+                    second.colour(),
+                    "{first:?} and {second:?} look identical with Pablo switched off"
+                );
+                assert_ne!(
+                    first.badge(),
+                    second.badge(),
+                    "{first:?} and {second:?} read identically with Pablo switched off"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_dangerous_state_still_stands_out_with_him_switched_off() {
+        // Disarmed must not be quietly reassuring in sober clothes either.
+        assert_eq!(Mood::Pyjamas.badge(), "DISARMED");
+        assert_ne!(Mood::Pyjamas.colour(), Mood::Playing.colour());
+    }
+
+    #[test]
+    fn pablo_is_on_unless_someone_says_otherwise() {
+        assert_eq!(Presentation::default(), Presentation::Pablo);
     }
 
     #[test]
