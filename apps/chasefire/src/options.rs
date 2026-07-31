@@ -88,6 +88,10 @@ pub struct Options {
     osc_target: String,
     /// What the next output added will be called. Cues address outputs by name.
     osc_name: String,
+    /// Which transport's settings are on show.
+    output_tab: Carrier,
+    /// Which cues the list is showing.
+    filter: Filter,
     /// Which cues are ticked, by id rather than by position: the list gets
     /// edited and reordered underneath, and a selection that follows row
     /// numbers ends up pointing at the wrong cues.
@@ -98,6 +102,56 @@ pub struct Options {
     /// a new list that discards are both two deliberate clicks and never one.
     about_to: Option<Danger>,
     message: Option<String>,
+}
+
+/// Which sort of output a panel or a filter is about. Not `cue::Carrier`,
+/// because MIDI down a cable and MIDI over a network are the same messages and
+/// very different things to set up — and to an operator hunting for the reason
+/// nothing is moving, they are two different cables to check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Carrier {
+    Osc,
+    Midi,
+    Network,
+}
+
+impl Carrier {
+    const ALL: [Carrier; 3] = [Carrier::Osc, Carrier::Midi, Carrier::Network];
+
+    fn label(self, words: &'static crate::text::Text) -> &'static str {
+        match self {
+            Carrier::Osc => words.tab_osc,
+            Carrier::Midi => words.tab_midi,
+            Carrier::Network => words.tab_network,
+        }
+    }
+}
+
+/// What the cue list is showing.
+///
+/// **One list, filtered** — not one list per transport. A cue at 10:00:00:00
+/// that starts the video and changes a snapshot on the desk is *one moment in
+/// the show*; kept in two tabs it would be the same timecode written down twice,
+/// and the day one of them moved they would quietly disagree. The tabs choose
+/// what to look at. They do not choose what a cue is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Filter {
+    Everything,
+    Only(Carrier),
+}
+
+impl Filter {
+    fn shows(self, cue: &cue::Cue) -> bool {
+        match self {
+            Filter::Everything => true,
+            Filter::Only(Carrier::Osc) => {
+                cue.carriers().any(|carrier| carrier == cue::Carrier::Osc)
+            }
+            // Until MIDI is built there is nothing to tell the two apart by, so
+            // both MIDI tabs show every MIDI cue rather than pretending to know.
+            Filter::Only(_) => cue.carriers().any(|carrier| carrier == cue::Carrier::Midi),
+        }
+    }
 }
 
 /// Something a click is about to throw away.
@@ -127,6 +181,8 @@ impl Options {
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
             osc_name: String::new(),
+            output_tab: Carrier::Osc,
+            filter: Filter::Everything,
             selected: std::collections::HashSet::new(),
             cue_path: cues.unwrap_or_else(|| {
                 crate::cuefile::untitled(&crate::cuefile::default_directory(), "cues")
@@ -309,11 +365,48 @@ impl Options {
         words: &'static crate::text::Text,
     ) {
         section(ui, words.section_outputs);
-        grid(ui, "outputs", |ui| {
-            // A show is not one machine. The video server, the desk and the
-            // lighting console are three addresses, and a cue can now name
-            // which one it means — so this is a list rather than a box.
-            label(ui, "OSC");
+
+        // Tabs here, where they belong: MIDI down a cable and MIDI over a
+        // network are the same messages and completely different things to set
+        // up. What is *not* tabbed is the cue list — see `Filter`.
+        ui.horizontal(|ui| {
+            for carrier in Carrier::ALL {
+                ui.selectable_value(&mut self.output_tab, carrier, carrier.label(words));
+            }
+        });
+        ui.add_space(6.0);
+
+        match self.output_tab {
+            Carrier::Osc => self.osc_outputs(ui, runner, words),
+            // Listed rather than hidden. Somebody deciding whether this tool
+            // fits their rig needs to know what it will and will not do, and
+            // finding that out by not finding a setting is a poor way to learn.
+            Carrier::Midi => {
+                hint(ui, words.midi_not_built);
+                ui.add_space(4.0);
+                hint(ui, words.midi_note);
+            }
+            Carrier::Network => {
+                hint(ui, words.midi_not_built);
+                ui.add_space(4.0);
+                hint(ui, words.rtp_note);
+            }
+        }
+    }
+
+    /// The OSC destinations, by name.
+    ///
+    /// A show is not one machine. The video server, the desk and the lighting
+    /// console are three addresses, and a cue names which one it means — so
+    /// this is a list rather than a box.
+    fn osc_outputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        grid(ui, "osc-outputs", |ui| {
+            label(ui, words.add_output);
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.osc_name)
@@ -331,7 +424,8 @@ impl Options {
                     };
                     match runner.connect_osc_as(&name, &self.osc_target) {
                         Ok(()) => {
-                            self.message = Some(words.sending_to.replace("{}", &self.osc_target))
+                            self.message = Some(words.sending_to.replace("{}", &self.osc_target));
+                            self.osc_name.clear();
                         }
                         Err(error) => self.message = Some(error),
                     }
@@ -355,33 +449,13 @@ impl Options {
                 });
                 ui.end_row();
             }
-
-            // The other two are listed rather than hidden. Somebody deciding
-            // whether this tool fits their rig needs to know what it will and
-            // will not do, and finding that out by not finding a setting is a
-            // poor way to learn it.
-            label(ui, "MIDI");
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(false, |ui| {
-                    let mut empty = String::from(words.no_port);
-                    ui.add(egui::TextEdit::singleline(&mut empty).desired_width(FIELD - 80.0));
-                });
-                hint(ui, words.not_built_yet);
-            });
-            ui.end_row();
-
-            label(ui, "MIDI over network");
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(false, |ui| {
-                    let mut empty = String::from(words.no_session);
-                    ui.add(egui::TextEdit::singleline(&mut empty).desired_width(FIELD - 80.0));
-                });
-                hint(ui, words.not_built_yet);
-            });
-            ui.end_row();
         });
         ui.add_space(2.0);
-        hint(ui, words.rtp_note);
+        if runner.output_names().is_empty() {
+            hint(ui, words.no_outputs);
+        } else {
+            hint(ui, words.outputs_hint);
+        }
     }
 
     fn cues_section(
@@ -447,6 +521,28 @@ impl Options {
         ui.add_space(2.0);
         hint(ui, words.save_as_hint);
 
+        ui.add_space(6.0);
+        // One list, filtered — never one list per transport. A cue that starts
+        // the video and moves the desk is one moment in the show; split across
+        // tabs it would be the same timecode written twice, and the day one of
+        // them moved they would quietly disagree.
+        ui.horizontal(|ui| {
+            let all = runner.cues().len();
+            ui.selectable_value(
+                &mut self.filter,
+                Filter::Everything,
+                format!("{} {all}", words.filter_all),
+            );
+            for carrier in Carrier::ALL {
+                let filter = Filter::Only(carrier);
+                let count = runner.cues().iter().filter(|cue| filter.shows(cue)).count();
+                ui.selectable_value(
+                    &mut self.filter,
+                    filter,
+                    format!("{} {count}", carrier.label(words)),
+                );
+            }
+        });
         ui.add_space(4.0);
         self.cue_table(ui, runner, words);
     }
@@ -476,6 +572,7 @@ impl Options {
         // names at all.
         let show_destination = outputs.len() > 1;
 
+        let filter = self.filter;
         let Widths {
             at: at_width,
             name: name_width,
@@ -513,6 +610,12 @@ impl Options {
                     });
 
                     for (index, cue) in cues.iter_mut().enumerate() {
+                        // The row number is the real one whatever is on show:
+                        // duplicating and deleting work on the list, not on
+                        // what happens to be visible.
+                        if !filter.shows(cue) {
+                            continue;
+                        }
                         // Alternating bands, painted behind the whole cue —
                         // every one of its messages, not just the first line.
                         // Reserved before the block is drawn and filled in
@@ -1509,6 +1612,71 @@ mod tests {
         cues.retain(|cue| !picked.contains(&cue.id));
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].id, 2);
+    }
+
+    #[test]
+    fn the_filter_changes_what_is_shown_and_nothing_else() {
+        // The trap in filtering a list you also edit: hiding rows must not
+        // change what the row numbers mean. Deleting while a filter is on has
+        // to remove the cue somebody ticked, not the one now in its place.
+        let mut cues = three_cues();
+        cues.push(cue::Cue::new(
+            9,
+            "por MIDI",
+            ltc::Timecode::new(10, 1, 0, 0),
+            cue::Message::MidiProgramChange {
+                channel: 1,
+                program: 12,
+                bank: None,
+            },
+        ));
+
+        let osc: Vec<u32> = cues
+            .iter()
+            .filter(|cue| Filter::Only(Carrier::Osc).shows(cue))
+            .map(|cue| cue.id)
+            .collect();
+        assert_eq!(osc, [1, 2, 3]);
+
+        let midi: Vec<u32> = cues
+            .iter()
+            .filter(|cue| Filter::Only(Carrier::Midi).shows(cue))
+            .map(|cue| cue.id)
+            .collect();
+        assert_eq!(midi, [9]);
+
+        assert_eq!(
+            cues.iter()
+                .filter(|cue| Filter::Everything.shows(cue))
+                .count(),
+            4,
+            "the whole list is still one list"
+        );
+    }
+
+    #[test]
+    fn a_cue_that_sends_to_both_shows_up_under_both() {
+        // The reason there is one list and not one per transport: this cue is a
+        // single moment in the show and belongs in both views, not split in two.
+        let both = cue::Cue::of(
+            1,
+            "video y mesa",
+            ltc::Timecode::new(10, 0, 0, 0),
+            vec![
+                cue::Step::anywhere(cue::Message::Osc {
+                    address: "/go".into(),
+                    args: vec![],
+                }),
+                cue::Step::anywhere(cue::Message::MidiProgramChange {
+                    channel: 1,
+                    program: 3,
+                    bank: None,
+                }),
+            ],
+        );
+        assert!(Filter::Only(Carrier::Osc).shows(&both));
+        assert!(Filter::Only(Carrier::Midi).shows(&both));
+        assert!(Filter::Everything.shows(&both));
     }
 
     #[test]
