@@ -25,6 +25,14 @@ pub mod frames {
     pub const ASLEEP: Range<usize> = 0..4;
     pub const PYJAMAS: Range<usize> = 4..6;
     pub const PLAYING: Range<usize> = 6..10;
+
+    // Two moods sharing a frame would be a copy-paste slip, and this is the
+    // sort of thing a compiler can check for free. It will not build if the
+    // ranges ever overlap.
+    const _: () = {
+        assert!(ASLEEP.end <= PYJAMAS.start);
+        assert!(PYJAMAS.end <= PLAYING.start);
+    };
 }
 
 #[derive(Debug)]
@@ -248,12 +256,5 @@ mod tests {
                 .count();
             assert!(visible > 20, "frame {frame} is empty or nearly so");
         }
-    }
-
-    #[test]
-    fn the_moods_do_not_overlap() {
-        // Sleeping and playing sharing a frame would be a copy-paste slip.
-        assert!(frames::ASLEEP.end <= frames::PYJAMAS.start);
-        assert!(frames::PYJAMAS.end <= frames::PLAYING.start);
     }
 }
