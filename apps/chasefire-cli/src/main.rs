@@ -137,50 +137,34 @@ fn run() -> Result<(), String> {
     }
 }
 
-/// Colour for each pixel character, so Pablo can be looked at before there is
-/// a window to put him in.
-fn ink(pixel: char) -> &'static str {
-    match pixel {
-        '#' => "\x1b[38;5;58m",  // dark hair
-        'o' => "\x1b[38;5;223m", // skin
-        'e' => "\x1b[38;5;236m", // eye
-        'T' => "\x1b[38;5;24m",  // shirt
-        'A' => "\x1b[38;5;223m", // arm
-        'G' => "\x1b[38;5;130m", // guitar body
-        'N' => "\x1b[38;5;94m",  // guitar neck
-        'P' => "\x1b[38;5;189m", // pyjamas
-        '^' => "\x1b[38;5;217m", // nightcap
-        'b' => "\x1b[38;5;152m", // snot bubble
-        'z' => "\x1b[38;5;250m", // zzz
-        '?' => "\x1b[38;5;220m",
-        _ => "\x1b[0m",
-    }
-}
-
-fn draw_pablo(frame: pablo::sprites::Frame, label: &str) {
-    for line in frame {
-        let mut rendered = String::new();
-        for pixel in line.chars() {
-            if pixel == '.' {
-                rendered.push_str("  ");
-            } else {
-                rendered.push_str(ink(pixel));
-                rendered.push_str("██");
-            }
-        }
-        rendered.push_str("\x1b[0m");
-        println!("{rendered}");
-    }
-    println!("\x1b[0m  {label}\n");
-}
-
 fn show_pablo() -> Result<(), String> {
     use pablo::Mood;
+    let sheet = pablo::sprites::Sheet::load().map_err(|error| error.to_string())?;
+    println!(
+        "Sprite sheet: {} frames of {}x{}\n",
+        sheet.frame_count(),
+        sheet.cell(),
+        sheet.cell()
+    );
+
     for mood in [Mood::Asleep, Mood::Pyjamas, Mood::Playing, Mood::Wobbling] {
-        let frames = pablo::sprites::frames_for(mood);
+        let range = pablo::sprites::frames_for(mood);
         println!("\x1b[1m── {mood:?} — {} ──\x1b[0m", mood.describe());
-        for (index, frame) in frames.iter().enumerate() {
-            draw_pablo(frame, &format!("frame {}/{}", index + 1, frames.len()));
+        for frame in range {
+            for y in 0..sheet.cell() {
+                let mut line = String::new();
+                for x in 0..sheet.cell() {
+                    let [red, green, blue, alpha] = sheet.pixel(frame, x, y);
+                    if alpha < 32 {
+                        line.push_str("  ");
+                    } else {
+                        line.push_str(&format!("\x1b[38;2;{red};{green};{blue}m██"));
+                    }
+                }
+                line.push_str("\x1b[0m");
+                println!("{line}");
+            }
+            println!("\x1b[0m  frame {frame}\n");
         }
     }
     Ok(())
