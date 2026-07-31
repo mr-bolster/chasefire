@@ -59,8 +59,8 @@ fn main() -> eframe::Result {
         .map(|path| (path, startup.screenshot_after));
 
     let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([382.0, 172.0])
-        .with_min_inner_size([360.0, 164.0])
+        .with_inner_size([382.0, 188.0])
+        .with_min_inner_size([360.0, 180.0])
         .with_always_on_top()
         .with_title("Chasefire");
 
@@ -224,6 +224,23 @@ impl eframe::App for Window {
                             .monospace()
                             .size(40.0)
                             .strong(),
+                    );
+
+                    // What kind of timecode, and how fast. Two different
+                    // questions, both answered at a glance, both sitting where
+                    // the eye already is after reading the numbers.
+                    let source = match (self.runner.source(), self.runner.frame_rate()) {
+                        (Some(source), Some(rate)) => {
+                            format!("{}  ·  {rate:.2} fps", source.label())
+                        }
+                        (Some(source), None) => format!("{}  ·  — fps", source.label()),
+                        (None, _) => "no input".to_string(),
+                    };
+                    ui.label(
+                        egui::RichText::new(source)
+                            .size(12.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(190, 195, 205)),
                     );
 
                     let (red, green, blue) = mood.colour();

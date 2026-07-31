@@ -12,6 +12,29 @@ use ltc::Timecode;
 use sink::{OscSink, Sink};
 use std::time::Instant;
 
+/// Where the timecode is coming from.
+///
+/// Only one of these is built so far, but the distinction belongs in the model
+/// rather than being assumed: an operator glancing at the window needs to know
+/// which of the two they are actually chasing, because the cable that broke is
+/// a different cable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// Audio, off a sound card.
+    Ltc,
+    /// MIDI Time Code, off a MIDI port. Not built yet.
+    Mtc,
+}
+
+impl Source {
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Ltc => "LTC",
+            Source::Mtc => "MTC",
+        }
+    }
+}
+
 /// Something worth telling the operator about.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -127,6 +150,21 @@ impl Runner {
     /// machine they pointed this at.
     pub fn output_target(&self) -> Option<String> {
         self.output.as_ref().map(|sink| sink.target().to_string())
+    }
+
+    /// What kind of timecode this is chasing, if anything.
+    pub fn source(&self) -> Option<Source> {
+        // An audio input can only ever be carrying LTC. When a MIDI input is
+        // possible this stops being a foregone conclusion.
+        self.capture.as_ref().map(|_| Source::Ltc)
+    }
+
+    /// The frame rate in force: pinned by the operator, or measured.
+    pub fn frame_rate(&self) -> Option<f64> {
+        if let Some(pinned) = self.pinned_fps {
+            return Some(pinned);
+        }
+        self.settled.then(|| self.engine.nominal_fps() as f64)
     }
 
     /// Which input channel is being read.
