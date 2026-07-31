@@ -152,6 +152,22 @@ impl Runner {
         self.output.as_ref().map(|sink| sink.target().to_string())
     }
 
+    /// The next cue due, and how many seconds away it is.
+    ///
+    /// The single most useful thing a show tool can put on screen after the
+    /// timecode itself: it answers "have I got time" without anybody doing
+    /// arithmetic in their head at four in the morning.
+    pub fn countdown(&self) -> Option<(String, f64)> {
+        let now = self.current?;
+        let rate = self.frame_rate()?;
+        let cue = self.engine.next_cue_after(now)?;
+        let nominal = self.engine.nominal_fps() as u32;
+        let frames = cue.at.as_frame_count(nominal) as i64 - now.as_frame_count(nominal) as i64;
+        // The offset fires cues early, so the wait is shorter by exactly that.
+        let frames = frames - self.engine.offset_frames() as i64;
+        Some((cue.name.clone(), frames.max(0) as f64 / rate))
+    }
+
     /// What kind of timecode this is chasing, if anything.
     pub fn source(&self) -> Option<Source> {
         // An audio input can only ever be carrying LTC. When a MIDI input is

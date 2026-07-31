@@ -243,12 +243,40 @@ impl eframe::App for Window {
                             .color(egui::Color32::from_rgb(190, 195, 205)),
                     );
 
-                    let (red, green, blue) = mood.colour();
-                    ui.label(
-                        egui::RichText::new(mood.describe())
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(red, green, blue)),
-                    );
+                    ui.horizontal(|ui| {
+                        let (red, green, blue) = mood.colour();
+                        ui.label(
+                            egui::RichText::new(mood.describe())
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(red, green, blue)),
+                        );
+
+                        // How long until the next cue. Colour tightens as it
+                        // approaches, so it is noticed without being read.
+                        if let Some((name, seconds)) = self.runner.countdown() {
+                            let colour = if seconds < 3.0 {
+                                egui::Color32::from_rgb(235, 110, 90)
+                            } else if seconds < 10.0 {
+                                egui::Color32::from_rgb(235, 170, 70)
+                            } else {
+                                egui::Color32::from_rgb(150, 155, 165)
+                            };
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "> {}  {seconds:.1}s",
+                                            trim_to(&name, 14)
+                                        ))
+                                        .size(11.0)
+                                        .strong()
+                                        .color(colour),
+                                    );
+                                },
+                            );
+                        }
+                    });
 
                     ui.add_space(2.0);
                     ui.horizontal(|ui| {
@@ -361,6 +389,17 @@ impl eframe::App for Window {
         // deadline and it must never wait on this.
         context.request_repaint_after(std::time::Duration::from_millis(33));
     }
+}
+
+/// Cue names are written for a cue list, not for a strip of window this wide.
+fn trim_to(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        return text.to_string();
+    }
+    text.chars()
+        .take(room.saturating_sub(1))
+        .collect::<String>()
+        + "…"
 }
 
 /// Small, dim text: present when looked for, invisible when not.
