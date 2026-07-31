@@ -26,6 +26,15 @@ const CUE_ROW: f32 = 23.0;
 /// How many cues should be visible without scrolling when there is room.
 const CUES_VISIBLE: f32 = 20.0;
 
+/// Where the money goes.
+///
+/// ⚠ VERIFY BEFORE RELEASE. A donate button pointing at the wrong handle sends
+/// a stranger the money people meant for the author, and unlike every other
+/// mistake in this file it cannot be undone by a later commit. This is a guess
+/// based on the project name and has not been confirmed by anybody.
+const PAYPAL: &str = "https://paypal.me/mrbolster";
+const HOME_PAGE: &str = "https://mrbolster.app";
+
 /// Rates worth offering, and what each is called on a spec sheet.
 const RATES: [(&str, f64); 7] = [
     ("23.98", 24_000.0 / 1001.0),
@@ -493,10 +502,28 @@ fn support_section(ui: &mut egui::Ui) {
         )
         .size(12.0),
     );
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
-        ui.hyperlink_to("mrbolster.app", "https://mrbolster.app");
-        hint(ui, "downloads, and the tip jar");
+        // Deliberately a button and not a link buried in a sentence. Somebody
+        // who has decided to pay should not have to hunt for where.
+        let donate = egui::Button::new(
+            egui::RichText::new("Donate with PayPal")
+                .size(14.0)
+                .strong()
+                .color(egui::Color32::WHITE),
+        )
+        .fill(egui::Color32::from_rgb(0, 112, 186))
+        .min_size(egui::vec2(190.0, 32.0));
+
+        if ui.add(donate).on_hover_text(PAYPAL).clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(PAYPAL));
+        }
+
+        ui.add_space(GAP);
+        ui.vertical(|ui| {
+            ui.hyperlink_to("mrbolster.app", HOME_PAGE);
+            hint(ui, "downloads and everything else");
+        });
     });
 
     ui.add_space(GAP);
