@@ -23,8 +23,14 @@ const LABEL: f32 = 118.0;
 const FIELD: f32 = 220.0;
 /// The tick box at the head of a cue row.
 const TICK: f32 = 22.0;
-/// The number that goes out with the address.
-const VALUE: f32 = 66.0;
+/// The button that adds another message to a cue.
+const ADD_STEP: f32 = 24.0;
+/// The little button showing an argument's OSC type tag.
+const ARG_TYPE: f32 = 22.0;
+/// The editor for an argument's value.
+const ARG_VALUE: f32 = 58.0;
+/// What the add and remove buttons cost on an argument row.
+const ARG_BUTTONS: f32 = 44.0;
 /// The remove button at the end of a cue row.
 const REMOVE: f32 = 52.0;
 /// One row of the cue list, near enough, for working out how many fit.
@@ -63,6 +69,8 @@ pub struct Options {
     /// `None` means work the frame rate out from the signal.
     pinned_fps: Option<f64>,
     osc_target: String,
+    /// What the next output added will be called. Cues address outputs by name.
+    osc_name: String,
     cue_path: String,
     /// What the next click on that button would destroy, if anything. Set on
     /// the first click and cleared by the second, so a save that overwrites and
@@ -95,6 +103,7 @@ impl Options {
             channel: channel.max(1),
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
+            osc_name: String::new(),
             cue_path: cues.unwrap_or_else(|| {
                 crate::cuefile::untitled(&crate::cuefile::default_directory(), "cues")
                     .to_string_lossy()
@@ -272,13 +281,26 @@ impl Options {
     ) {
         section(ui, words.section_outputs);
         grid(ui, "outputs", |ui| {
+            // A show is not one machine. The video server, the desk and the
+            // lighting console are three addresses, and a cue can now name
+            // which one it means — so this is a list rather than a box.
             label(ui, "OSC");
             ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.osc_name)
+                        .desired_width(80.0)
+                        .hint_text(words.output_name),
+                );
                 ui.add(
                     egui::TextEdit::singleline(&mut self.osc_target).desired_width(FIELD - 80.0),
                 );
                 if ui.button(words.connect).clicked() {
-                    match runner.connect_osc(&self.osc_target) {
+                    let name = if self.osc_name.trim().is_empty() {
+                        "osc".to_string()
+                    } else {
+                        self.osc_name.trim().to_string()
+                    };
+                    match runner.connect_osc_as(&name, &self.osc_target) {
                         Ok(()) => {
                             self.message = Some(words.sending_to.replace("{}", &self.osc_target))
                         }
@@ -287,6 +309,23 @@ impl Options {
                 }
             });
             ui.end_row();
+
+            for name in runner.output_names() {
+                label(ui, "");
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{name} — {}",
+                            runner.output_described(&name).unwrap_or_default()
+                        ))
+                        .size(11.0),
+                    );
+                    if ui.small_button(words.remove).clicked() {
+                        runner.disconnect_output(&name);
+                    }
+                });
+                ui.end_row();
+            }
 
             // The other two are listed rather than hidden. Somebody deciding
             // whether this tool fits their rig needs to know what it will and
@@ -398,19 +437,20 @@ impl Options {
     ) {
         let mut cues = runner.cues().to_vec();
         let mut changed = false;
-        let mut remove = None;
+        let mut remove_cue = None;
+        let mut remove_step = None;
+        let outputs = runner.output_names();
 
-        // Every text field grows with the window, each with a floor below which
-        // it stops being usable. The timecode needs the least — it is always
-        // eleven characters — but cramming it into exactly eleven characters
-        // makes it fiddly to click into, so it gets a share too.
-        // What the row spends on things that never change size: the tick, the
-        // value, the remove button, and the five gaps between the six of them.
-        let fixed = TICK + VALUE + REMOVE + GAP * 5.0;
-        let flexible = (width - fixed - 20.0).max(280.0);
-        let at_width = (flexible * 0.14).max(96.0);
-        let name_width = (flexible * 0.30).max(110.0);
-        let address_width = (flexible - at_width - name_width).max(150.0);
+        // Every field grows with the window, each with a floor below which it
+        // stops being usable. The timecode needs the least — it is always
+        // eleven characters — but cramming it into exactly eleven makes it
+        // fiddly to click into, so it gets a share too.
+        let fixed = TICK + ADD_STEP + REMOVE + GAP * 6.0;
+        let flexible = (width - fixed - 20.0).max(320.0);
+        let at_width = (flexible * 0.13).max(96.0);
+        let name_width = (flexible * 0.22).max(100.0);
+        let args_width = (flexible * 0.30).max(ARG_TYPE + ARG_VALUE + ARG_BUTTONS);
+        let address_width = (flexible - at_width - name_width - args_width).max(140.0);
 
         if cues.is_empty() {
             hint(ui, words.no_cues_yet);
@@ -432,53 +472,102 @@ impl Options {
                         heading(ui, words.column_at, at_width);
                         heading(ui, words.column_name, name_width);
                         heading(ui, words.column_sends, address_width);
-                        heading(ui, words.column_value, VALUE).on_hover_text(words.value_tooltip);
+                        heading(ui, words.column_args, args_width)
+                            .on_hover_text(words.args_tooltip);
                     });
 
                     for (index, cue) in cues.iter_mut().enumerate() {
-                        // Alternating bands, painted behind the row. Reserved
-                        // before the row is drawn and filled in after, once its
-                        // real height is known — twenty near-identical lines of
-                        // timecode are hard to follow otherwise.
+                        // Alternating bands, painted behind the whole cue —
+                        // every one of its messages, not just the first line.
+                        // Reserved before the block is drawn and filled in
+                        // after, once its real height is known.
                         let band = ui.painter().add(egui::Shape::Noop);
-                        let response = row(ui, |ui| {
-                            changed |= ui
-                                .add_sized(
-                                    [TICK, CUE_ROW],
-                                    egui::Checkbox::without_text(&mut cue.enabled),
-                                )
-                                .changed();
+                        let block = ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            let steps = cue.steps.len();
+                            for step_index in 0..steps {
+                                row(ui, |ui| {
+                                    if step_index == 0 {
+                                        changed |= ui
+                                            .add_sized(
+                                                [TICK, CUE_ROW],
+                                                egui::Checkbox::without_text(&mut cue.enabled),
+                                            )
+                                            .changed();
 
-                            // Typed the way the trade writes it, and only
-                            // accepted once it is actually a timecode: a
-                            // half-typed one must not move a cue to midnight.
-                            let mut text = cue.at.to_string();
-                            let edited = ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut text)
-                                        .desired_width(at_width)
-                                        .font(egui::TextStyle::Monospace),
-                                )
-                                .on_hover_text(words.at_tooltip)
-                                .changed();
-                            if edited {
-                                if let Some(parsed) = parse_timecode(&text) {
-                                    cue.at = parsed;
-                                    changed = true;
-                                }
-                            }
+                                        // Typed the way the trade writes it, and
+                                        // only accepted once it is actually a
+                                        // timecode: a half-typed one must not
+                                        // move a cue to midnight.
+                                        let mut text = cue.at.to_string();
+                                        let edited = ui
+                                            .add(
+                                                egui::TextEdit::singleline(&mut text)
+                                                    .desired_width(at_width)
+                                                    .font(egui::TextStyle::Monospace),
+                                            )
+                                            .on_hover_text(words.at_tooltip)
+                                            .changed();
+                                        if edited {
+                                            if let Some(parsed) = parse_timecode(&text) {
+                                                cue.at = parsed;
+                                                changed = true;
+                                            }
+                                        }
 
-                            changed |= ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut cue.name)
-                                        .desired_width(name_width),
-                                )
-                                .changed();
+                                        changed |= ui
+                                            .add(
+                                                egui::TextEdit::singleline(&mut cue.name)
+                                                    .desired_width(name_width),
+                                            )
+                                            .changed();
+                                    } else {
+                                        // The later messages of the same cue
+                                        // line up under the first, with nothing
+                                        // repeated: they happen at one moment,
+                                        // and the moment is written once.
+                                        ui.add_space(TICK + at_width + name_width + GAP * 2.0);
+                                    }
 
-                            changed |= action_editor(ui, &mut cue.action, words, address_width);
+                                    changed |= step_editor(
+                                        ui,
+                                        &mut cue.steps[step_index],
+                                        &outputs,
+                                        words,
+                                        address_width,
+                                        args_width,
+                                    );
 
-                            if ui.small_button(words.remove).clicked() {
-                                remove = Some(index);
+                                    if step_index == 0 {
+                                        if ui
+                                            .add_sized(
+                                                [ADD_STEP, CUE_ROW - 5.0],
+                                                egui::Button::new("+"),
+                                            )
+                                            .on_hover_text(words.add_message)
+                                            .clicked()
+                                        {
+                                            let next = cue::Step::anywhere(cue::Message::Osc {
+                                                address: String::new(),
+                                                args: Vec::new(),
+                                            });
+                                            cue.steps.push(next);
+                                            changed = true;
+                                        }
+                                        if ui.small_button(words.remove).clicked() {
+                                            remove_cue = Some(index);
+                                        }
+                                    } else {
+                                        ui.add_space(ADD_STEP + GAP);
+                                        if ui
+                                            .small_button("−")
+                                            .on_hover_text(words.remove_message)
+                                            .clicked()
+                                        {
+                                            remove_step = Some((index, step_index));
+                                        }
+                                    }
+                                });
                             }
                         });
 
@@ -486,7 +575,7 @@ impl Options {
                             let stripe = ui.visuals().faint_bg_color;
                             ui.painter().set(
                                 band,
-                                egui::Shape::rect_filled(response.response.rect, 2.0, stripe),
+                                egui::Shape::rect_filled(block.response.rect, 2.0, stripe),
                             );
                         }
                     }
@@ -501,7 +590,7 @@ impl Options {
                     next,
                     format!("cue {next}"),
                     ltc::Timecode::new(10, 0, 0, 0),
-                    cue::Action::Osc {
+                    cue::Message::Osc {
                         address: "/composition/columns/1/connect".into(),
                         args: vec![cue::OscArg::Int(1)],
                     },
@@ -544,9 +633,18 @@ impl Options {
             }
         });
 
-        if let Some(index) = remove {
+        if let Some(index) = remove_cue {
             cues.remove(index);
             changed = true;
+        }
+        if let Some((cue_index, step_index)) = remove_step {
+            // The last message of a cue is not removable: a cue that sends
+            // nothing is a line in the list that looks armed and does nothing
+            // when its moment comes. Remove the cue instead.
+            if cues[cue_index].steps.len() > 1 {
+                cues[cue_index].steps.remove(step_index);
+                changed = true;
+            }
         }
         if changed {
             runner.set_cues(cues);
@@ -767,34 +865,175 @@ fn heading(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
     )
 }
 
-/// Edit whatever a cue does. Only OSC exists so far, so this is one row; when
-/// MIDI arrives it becomes a choice of kind and then its own fields.
-fn action_editor(
+/// Edit one message of a cue: where it goes, what it says, what it carries.
+fn step_editor(
     ui: &mut egui::Ui,
-    action: &mut cue::Action,
+    step: &mut cue::Step,
+    outputs: &[String],
+    words: &'static crate::text::Text,
+    address_width: f32,
+    args_width: f32,
+) -> bool {
+    let mut changed = false;
+
+    // The destination picker only appears once there is a choice to make. A
+    // show with one machine should never have to learn that outputs have names.
+    if outputs.len() > 1 {
+        let chosen = step
+            .to
+            .clone()
+            .unwrap_or_else(|| words.default_output.to_string());
+        egui::ComboBox::from_id_salt(ui.next_auto_id())
+            .selected_text(shorten(&chosen, 10))
+            .width(90.0)
+            .show_ui(ui, |ui| {
+                changed |= ui
+                    .selectable_value(&mut step.to, None, words.default_output)
+                    .changed();
+                for name in outputs {
+                    changed |= ui
+                        .selectable_value(&mut step.to, Some(name.clone()), name)
+                        .changed();
+                }
+            });
+    }
+
+    match &mut step.send {
+        cue::Message::Osc { address, args } => {
+            changed |= ui
+                .add(egui::TextEdit::singleline(address).desired_width(address_width))
+                .changed();
+            changed |= args_editor(ui, args, words, args_width);
+        }
+        // MIDI has no output to go out of yet, so it is shown and not edited
+        // rather than pretending to work.
+        other => {
+            ui.add_sized(
+                [address_width + args_width, CUE_ROW - 5.0],
+                egui::Label::new(egui::RichText::new(format!("{other:?}")).size(11.0).weak()),
+            );
+        }
+    }
+
+    changed
+}
+
+/// The arguments that ride along with an OSC address.
+///
+/// Not a single on/off box, because a single on/off box is one media server's
+/// habit rather than a cue system: QLab wants **no arguments at all** on
+/// `/cue/5/start`, grandMA3 wants a whole command line as a **string**, and
+/// Resolume wants an **int** to trigger but a **float** for opacity. The type
+/// button shows what will actually go on the wire — `i`, `f`, `s`, `T`, `F` —
+/// which is the same letter the receiving end will see in the type tag.
+fn args_editor(
+    ui: &mut egui::Ui,
+    args: &mut Vec<cue::OscArg>,
     words: &'static crate::text::Text,
     width: f32,
 ) -> bool {
-    match action {
-        cue::Action::Osc { address, args } => {
-            // Drawn straight into the row it was called from, not in a
-            // horizontal of its own: a nested one brings its own spacing and
-            // the value stops lining up with the heading above it.
-            let mut changed = ui
-                .add(egui::TextEdit::singleline(address).desired_width(width))
-                .changed();
-            if let Some(cue::OscArg::Int(value)) = args.first_mut() {
-                changed |= ui
-                    .add_sized([VALUE, CUE_ROW - 5.0], egui::DragValue::new(value))
-                    .on_hover_text(words.value_tooltip)
-                    .changed();
+    let mut changed = false;
+    let mut remove = None;
+
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, CUE_ROW),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+
+            if args.is_empty() {
+                ui.add_sized(
+                    [ARG_TYPE + ARG_VALUE, CUE_ROW - 5.0],
+                    egui::Label::new(egui::RichText::new(words.no_args).size(11.0).weak()),
+                )
+                .on_hover_text(words.no_args_tooltip);
             }
-            changed
-        }
-        other => {
-            ui.label(format!("{other:?}"));
-            false
-        }
+
+            for (index, arg) in args.iter_mut().enumerate() {
+                // One button per argument, cycling through the types. Faster
+                // than a dropdown for something changed this often, and the
+                // letter on it is the OSC type tag itself.
+                if ui
+                    .add_sized(
+                        [ARG_TYPE, CUE_ROW - 5.0],
+                        egui::Button::new(egui::RichText::new(tag_of(arg)).monospace()),
+                    )
+                    .on_hover_text(words.arg_type_tooltip)
+                    .clicked()
+                {
+                    *arg = next_type(arg);
+                    changed = true;
+                }
+
+                match arg {
+                    cue::OscArg::Int(value) => {
+                        changed |= ui
+                            .add_sized([ARG_VALUE, CUE_ROW - 5.0], egui::DragValue::new(value))
+                            .changed();
+                    }
+                    cue::OscArg::Float(value) => {
+                        changed |= ui
+                            .add_sized(
+                                [ARG_VALUE, CUE_ROW - 5.0],
+                                egui::DragValue::new(value).speed(0.01),
+                            )
+                            .changed();
+                    }
+                    cue::OscArg::Str(value) => {
+                        changed |= ui
+                            .add(egui::TextEdit::singleline(value).desired_width(ARG_VALUE))
+                            .changed();
+                    }
+                    // True and false ride in the type tag alone; there is
+                    // nothing else to say about them.
+                    cue::OscArg::Bool(_) => {
+                        ui.add_space(ARG_VALUE);
+                    }
+                }
+
+                if ui
+                    .small_button("−")
+                    .on_hover_text(words.remove_arg)
+                    .clicked()
+                {
+                    remove = Some(index);
+                }
+            }
+
+            if ui.small_button("+").on_hover_text(words.add_arg).clicked() {
+                args.push(cue::OscArg::Int(1));
+                changed = true;
+            }
+        },
+    );
+
+    if let Some(index) = remove {
+        args.remove(index);
+        changed = true;
+    }
+    changed
+}
+
+/// The OSC type tag character this argument will travel under.
+fn tag_of(arg: &cue::OscArg) -> &'static str {
+    match arg {
+        cue::OscArg::Int(_) => "i",
+        cue::OscArg::Float(_) => "f",
+        cue::OscArg::Str(_) => "s",
+        cue::OscArg::Bool(true) => "T",
+        cue::OscArg::Bool(false) => "F",
+    }
+}
+
+/// The next type round the loop, carrying the value across where that means
+/// something. Changing an int to a float should keep the number.
+fn next_type(arg: &cue::OscArg) -> cue::OscArg {
+    match arg {
+        cue::OscArg::Int(value) => cue::OscArg::Float(*value as f32),
+        cue::OscArg::Float(value) => cue::OscArg::Str(format!("{value}")),
+        cue::OscArg::Str(_) => cue::OscArg::Bool(true),
+        cue::OscArg::Bool(true) => cue::OscArg::Bool(false),
+        cue::OscArg::Bool(false) => cue::OscArg::Int(1),
     }
 }
 
@@ -867,7 +1106,7 @@ mod tests {
                     )
                     .show(context, |ui| {
                         let width = ui.max_rect().width();
-                        let fixed = TICK + VALUE + REMOVE + GAP * 5.0;
+                        let fixed = TICK + ADD_STEP + REMOVE + GAP * 6.0;
                         let flexible = (width - fixed - 20.0).max(280.0);
                         let at_width = (flexible * 0.14).max(96.0);
                         let name_width = (flexible * 0.30).max(110.0);

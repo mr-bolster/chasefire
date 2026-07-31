@@ -26,7 +26,7 @@
 //! a plausible-looking timecode, far from the truth, arriving alone.
 
 use chase::Chaser;
-use cue::{Action, Cue, Engine, OscArg};
+use cue::{Cue, Engine, Message, OscArg};
 use ltc::{DecodedFrame, Timecode};
 
 const FPS: u8 = 25;
@@ -48,7 +48,7 @@ fn engine_with_one_cue_at(at: Timecode) -> Engine {
         1,
         "the one that matters",
         at,
-        Action::Osc {
+        Message::Osc {
             address: "/go".into(),
             args: vec![OscArg::Int(1)],
         },

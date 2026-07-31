@@ -4,7 +4,7 @@
 //! is a new file rather than surgery on the engine. Sinks never decide *whether*
 //! to fire — that argument was settled in the `cue` crate — they only send.
 
-use cue::{Action, OscArg};
+use cue::{Carrier, Message, OscArg, Step};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
@@ -15,10 +15,13 @@ pub trait Sink {
 
     /// Send it. Returns an error rather than panicking: one dead receiver must
     /// never take the show down with it.
-    fn deliver(&mut self, action: &Action) -> io::Result<()>;
+    fn deliver(&mut self, message: &Message) -> io::Result<()>;
 
-    /// True if this sink knows how to handle that action at all.
-    fn accepts(&self, action: &Action) -> bool;
+    /// True if this sink knows how to carry that message at all.
+    fn accepts(&self, message: &Message) -> bool;
+
+    /// Which sort of messages this one carries.
+    fn carrier(&self) -> Carrier;
 }
 
 /// Open Sound Control over UDP: Resolume, grandMA3, TouchDesigner, VST hosts.
@@ -54,18 +57,114 @@ impl Sink for OscSink {
         format!("OSC to {}", self.target)
     }
 
-    fn accepts(&self, action: &Action) -> bool {
-        matches!(action, Action::Osc { .. })
+    fn accepts(&self, message: &Message) -> bool {
+        matches!(message, Message::Osc { .. })
     }
 
-    fn deliver(&mut self, action: &Action) -> io::Result<()> {
-        match action {
-            Action::Osc { address, args } => self.send(address, args),
+    fn carrier(&self) -> Carrier {
+        Carrier::Osc
+    }
+
+    fn deliver(&mut self, message: &Message) -> io::Result<()> {
+        match message {
+            Message::Osc { address, args } => self.send(address, args),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "not an OSC action",
+                "not an OSC message",
             )),
         }
+    }
+}
+
+/// Everywhere this program can send, by name.
+///
+/// A show is not one machine. The video server, the desk and the lighting
+/// console are three addresses, and the cue that starts the song talks to two
+/// of them. So a step names where it goes — and a step that names nowhere goes
+/// to the first output that can carry it, which is what a one-destination show
+/// wants and never has to think about.
+#[derive(Default)]
+pub struct Outputs {
+    named: Vec<(String, Box<dyn Sink>)>,
+}
+
+impl Outputs {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add one, replacing any output already going by that name.
+    pub fn put(&mut self, name: impl Into<String>, sink: Box<dyn Sink>) {
+        let name = name.into();
+        self.named.retain(|(existing, _)| existing != &name);
+        self.named.push((name, sink));
+    }
+
+    pub fn remove(&mut self, name: &str) -> bool {
+        let before = self.named.len();
+        self.named.retain(|(existing, _)| existing != name);
+        self.named.len() != before
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.named.is_empty()
+    }
+
+    /// The names, in the order they were added.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.named.iter().map(|(name, _)| name.as_str())
+    }
+
+    pub fn describe(&self, name: &str) -> Option<String> {
+        self.named
+            .iter()
+            .find(|(existing, _)| existing == name)
+            .map(|(_, sink)| sink.describe())
+    }
+
+    /// Send one step wherever it is addressed.
+    ///
+    /// The errors are deliberately the ones an operator can act on. "There is
+    /// no output called wing" is a thing somebody can go and fix between songs;
+    /// a swallowed failure is a cue that silently does nothing all night.
+    pub fn deliver(&mut self, step: &Step) -> io::Result<()> {
+        let wanted = step.send.carried_by();
+        let index = match &step.to {
+            Some(name) => {
+                let found = self
+                    .named
+                    .iter()
+                    .position(|(existing, _)| existing == name)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("there is no output called '{name}'"),
+                        )
+                    })?;
+                if !self.named[found].1.accepts(&step.send) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("'{name}' cannot carry that kind of message"),
+                    ));
+                }
+                found
+            }
+            // Nowhere named: the first output that can carry it.
+            None => self
+                .named
+                .iter()
+                .position(|(_, sink)| sink.carrier() == wanted)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        match wanted {
+                            Carrier::Osc => "no OSC output is connected",
+                            Carrier::Midi => "no MIDI output is open",
+                        },
+                    )
+                })?,
+        };
+        self.named[index].1.deliver(&step.send)
     }
 }
 
@@ -175,7 +274,7 @@ mod tests {
         let address = receiver.local_addr().unwrap();
 
         let mut sink = OscSink::connect(address).unwrap();
-        sink.deliver(&Action::Osc {
+        sink.deliver(&Message::Osc {
             address: "/cue/7".into(),
             args: vec![OscArg::Int(7)],
         })
@@ -192,12 +291,142 @@ mod tests {
     #[test]
     fn refuses_to_deliver_what_it_does_not_speak() {
         let mut sink = OscSink::connect("127.0.0.1:9999").unwrap();
-        let midi = Action::MidiNote {
+        let midi = Message::MidiNote {
             channel: 1,
             note: 60,
             velocity: 127,
         };
         assert!(!sink.accepts(&midi));
         assert!(sink.deliver(&midi).is_err());
+    }
+}
+
+#[cfg(test)]
+mod outputs_tests {
+    use super::*;
+
+    fn listener() -> (UdpSocket, SocketAddr) {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let address = socket.local_addr().unwrap();
+        (socket, address)
+    }
+
+    #[test]
+    fn one_cue_reaches_two_different_machines() {
+        // The case the old model could not express at all: a moment in the show
+        // that starts the video and moves the desk.
+        let (video, video_at) = listener();
+        let (desk, desk_at) = listener();
+
+        let mut outputs = Outputs::new();
+        outputs.put("video", Box::new(OscSink::connect(video_at).unwrap()));
+        outputs.put("mesa", Box::new(OscSink::connect(desk_at).unwrap()));
+
+        outputs
+            .deliver(&Step::to(
+                "video",
+                Message::Osc {
+                    address: "/composition/columns/1/connect".into(),
+                    args: vec![OscArg::Int(1)],
+                },
+            ))
+            .unwrap();
+        outputs
+            .deliver(&Step::to(
+                "mesa",
+                Message::Osc {
+                    address: "/-action/goscene".into(),
+                    args: vec![OscArg::Int(12)],
+                },
+            ))
+            .unwrap();
+
+        let mut buffer = [0u8; 256];
+        let (length, _) = video.recv_from(&mut buffer).unwrap();
+        assert!(buffer[..length].starts_with(b"/composition/columns/1/connect\0"));
+        let (length, _) = desk.recv_from(&mut buffer).unwrap();
+        assert!(buffer[..length].starts_with(b"/-action/goscene\0"));
+    }
+
+    #[test]
+    fn a_step_that_names_nowhere_takes_the_only_road_there_is() {
+        // A show with one destination should never have to name it.
+        let (receiver, address) = listener();
+        let mut outputs = Outputs::new();
+        outputs.put("main", Box::new(OscSink::connect(address).unwrap()));
+
+        outputs
+            .deliver(&Step::anywhere(Message::Osc {
+                address: "/go".into(),
+                args: vec![],
+            }))
+            .unwrap();
+
+        let mut buffer = [0u8; 64];
+        let (length, _) = receiver.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..length], b"/go\0,\0\0\0");
+    }
+
+    #[test]
+    fn naming_an_output_that_is_not_there_says_so_by_name() {
+        // Between songs somebody can fix "there is no output called wing".
+        // Nobody can fix a cue that quietly did nothing.
+        let mut outputs = Outputs::new();
+        outputs.put(
+            "video",
+            Box::new(OscSink::connect("127.0.0.1:9999").unwrap()),
+        );
+
+        let error = outputs
+            .deliver(&Step::to(
+                "wing",
+                Message::Osc {
+                    address: "/go".into(),
+                    args: vec![],
+                },
+            ))
+            .expect_err("should have complained");
+        assert!(error.to_string().contains("wing"), "{error}");
+    }
+
+    #[test]
+    fn with_nothing_connected_it_says_that_rather_than_pretending() {
+        let mut outputs = Outputs::new();
+        let error = outputs
+            .deliver(&Step::anywhere(Message::Osc {
+                address: "/go".into(),
+                args: vec![],
+            }))
+            .expect_err("should have complained");
+        assert!(error.to_string().contains("OSC"), "{error}");
+    }
+
+    #[test]
+    fn adding_the_same_name_twice_replaces_rather_than_duplicates() {
+        let (_first, first_at) = listener();
+        let (second, second_at) = listener();
+
+        let mut outputs = Outputs::new();
+        outputs.put("video", Box::new(OscSink::connect(first_at).unwrap()));
+        outputs.put("video", Box::new(OscSink::connect(second_at).unwrap()));
+        assert_eq!(outputs.names().count(), 1, "two outputs with one name");
+
+        outputs
+            .deliver(&Step::to(
+                "video",
+                Message::Osc {
+                    address: "/go".into(),
+                    args: vec![],
+                },
+            ))
+            .unwrap();
+
+        // It went to the new address, not the one it replaced.
+        let mut buffer = [0u8; 64];
+        let (length, _) = second.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..length], b"/go\0,\0\0\0");
     }
 }
