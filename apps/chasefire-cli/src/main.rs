@@ -32,7 +32,8 @@ MODES:
     gen <file>        Write a WAV of LTC to test with (--seconds, --from, --fps)
     listen            Read LTC live from a sound card and fire cues
     devices           List the audio inputs this machine has
-    pablo             Show Pablo in the terminal, every mood in turn
+    pablo             Draw the sprites in the terminal, every mood in turn
+                      (--sober for the transport marks)
     latency           Measure the round trip: generate LTC out of one device,
                       read it back on another, and time the difference
 
@@ -74,6 +75,8 @@ struct Options {
     device: Option<String>,
     out_device: Option<String>,
     dry_run: bool,
+    /// Show the transport marks instead of the little guitarist.
+    sober: bool,
 }
 
 enum Mode {
@@ -106,7 +109,11 @@ fn run() -> Result<(), String> {
         return measure_latency(&options);
     }
     if matches!(options.mode, Mode::Pablo) {
-        return show_pablo();
+        return show_pablo(if options.sober {
+            pablo::Presentation::Plain
+        } else {
+            pablo::Presentation::Pablo
+        });
     }
 
     let cues = load_cues(&options.cues)?;
@@ -137,17 +144,23 @@ fn run() -> Result<(), String> {
     }
 }
 
-fn show_pablo() -> Result<(), String> {
+fn show_pablo(presentation: pablo::Presentation) -> Result<(), String> {
     use pablo::Mood;
-    let sheet = pablo::sprites::Sheet::load().map_err(|error| error.to_string())?;
+    let sheet = pablo::sprites::Sheet::load(presentation).map_err(|error| error.to_string())?;
     println!(
-        "Sprite sheet: {} frames of {}x{}\n",
+        "{presentation:?}: {} frames of {}x{}\n",
         sheet.frame_count(),
         sheet.cell(),
         sheet.cell()
     );
 
-    for mood in [Mood::Asleep, Mood::Pyjamas, Mood::Playing, Mood::Wobbling] {
+    for mood in [
+        Mood::Asleep,
+        Mood::Pyjamas,
+        Mood::Playing,
+        Mood::Wobbling,
+        Mood::Shivering,
+    ] {
         let range = pablo::sprites::frames_for(mood);
         println!("\x1b[1m── {mood:?} — {} ──\x1b[0m", mood.describe());
         for frame in range {
@@ -682,6 +695,7 @@ fn parse_arguments() -> Result<Options, String> {
         device: None,
         out_device: None,
         dry_run: false,
+        sober: false,
     };
 
     let mode = arguments.next().ok_or_else(|| USAGE.to_string())?;
@@ -741,6 +755,7 @@ fn parse_arguments() -> Result<Options, String> {
             "--device" => options.device = Some(value()?),
             "--out-device" => options.out_device = Some(value()?),
             "--dry-run" => options.dry_run = true,
+            "--sober" => options.sober = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
