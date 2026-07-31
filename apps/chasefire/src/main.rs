@@ -25,6 +25,12 @@ struct Startup {
     /// Seconds to wait before taking it, so the shot can catch a running show
     /// rather than an empty window.
     screenshot_after: f32,
+    /// Start armed. For an unattended installation — a machine that boots and
+    /// runs a show with nobody in front of it — and for testing the whole chain
+    /// without somebody having to be there to click. Nothing is hidden by it:
+    /// the window says ARMED in green either way, and the log says where it
+    /// came from.
+    arm: bool,
     /// Force a flash on the first frame, so a picture can be taken of it.
     /// Documentation and eyeballing only — nothing fires here.
     demo_flash: Option<String>,
@@ -51,6 +57,7 @@ fn parse_startup() -> Startup {
             .and_then(|text| text.parse().ok())
             .unwrap_or(0.3),
         demo_flash: value("--demo-flash"),
+        arm: arguments.iter().any(|argument| argument == "--arm"),
     }
 }
 
@@ -188,11 +195,15 @@ impl Flash {
 impl Window {
     fn new(startup: Startup, screenshot: Option<(String, f32)>) -> Self {
         let mut runner = Runner::new(25);
-        // Nothing is armed because a window opened. Arming is a decision.
-        runner.set_armed(false);
+        // Nothing is armed because a window opened. Arming is a decision, and
+        // the only way to make it by accident should be to say so out loud.
+        runner.set_armed(startup.arm);
         runner.pin_frame_rate(startup.fps);
 
         let mut notes = Vec::new();
+        if startup.arm {
+            notes.push("armed from the command line".to_string());
+        }
 
         if let Some(path) = &startup.cues {
             match std::fs::read_to_string(path)
@@ -315,11 +326,21 @@ impl eframe::App for Window {
 
             ui.vertical(|ui| {
                 // The only thing that has to be legible across a dark room.
+                // The numbers carry the arm state too. It is the largest thing
+                // in the window, so if it is green the show is live and if it
+                // is amber it is not — readable from further away than the
+                // button underneath it.
+                let armed_colour = if self.runner.is_armed() {
+                    egui::Color32::from_rgb(120, 235, 160)
+                } else {
+                    egui::Color32::from_rgb(235, 185, 95)
+                };
                 ui.label(
                     egui::RichText::new(self.timecode_text())
                         .monospace()
                         .size(40.0)
-                        .strong(),
+                        .strong()
+                        .color(armed_colour),
                 );
 
                 let width = column;
@@ -378,7 +399,7 @@ impl eframe::App for Window {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
                                 ui.label(
-                                    egui::RichText::new(format!("next  {}", trim_to(&name, 16)))
+                                    egui::RichText::new(format!("next  {}", trim_to(&name, 24)))
                                         .size(13.0)
                                         .color(colour),
                                 );
@@ -448,9 +469,18 @@ impl eframe::App for Window {
             }
 
             ui.add_space(GAP);
-            let pin = if self.always_on_top { "PIN" } else { "pin" };
+            let pin_button = if self.always_on_top {
+                egui::Button::new(
+                    egui::RichText::new("PIN")
+                        .strong()
+                        .color(egui::Color32::BLACK),
+                )
+                .fill(egui::Color32::from_rgb(70, 200, 110))
+            } else {
+                egui::Button::new(egui::RichText::new("pin").weak())
+            };
             if ui
-                .add(egui::Button::new(pin).min_size(egui::vec2(pin_width, ROW)))
+                .add(pin_button.min_size(egui::vec2(pin_width, ROW)))
                 .on_hover_text("Keep this window above the others")
                 .clicked()
             {
@@ -538,8 +568,11 @@ impl eframe::App for Window {
             ui.add_space(GAP);
             ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
                 ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    // Clipped to its half. A log line long enough to reach
+                    // across the divider makes the split look accidental.
                     for line in &self.log {
-                        ui.label(small(line));
+                        ui.label(small(&trim_to(line, 34)));
                     }
                 });
             });

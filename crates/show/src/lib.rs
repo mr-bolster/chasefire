@@ -257,6 +257,7 @@ impl Runner {
             (incoming, capture.samples_processed(), capture.sample_rate())
         };
 
+        let drained = incoming.len();
         for frame in incoming {
             if !self.settled {
                 if let Some(rate) = ltc::snap_to_known_frame_rate(frame.estimated_fps as f64) {
@@ -284,6 +285,19 @@ impl Runner {
         // gone by, and let the chaser count through them if it is willing to.
         let elapsed = samples_seen.saturating_sub(self.last_good_sample);
         let due = (elapsed as f64 / self.samples_per_frame) as u64;
+
+        if std::env::var_os("CHASEFIRE_DEBUG").is_some() {
+            eprintln!(
+                "poll: drained={} elapsed={} spf={:.0} due={} ticks={} signal={:?} current={:?}",
+                drained,
+                elapsed,
+                self.samples_per_frame,
+                due,
+                self.freewheel_ticks,
+                self.chaser.signal(),
+                self.current
+            );
+        }
         while self.freewheel_ticks < due {
             self.freewheel_ticks += 1;
             match self.chaser.on_missing_frame() {
