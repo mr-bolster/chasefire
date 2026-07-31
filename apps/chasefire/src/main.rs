@@ -59,8 +59,8 @@ fn main() -> eframe::Result {
         .map(|path| (path, startup.screenshot_after));
 
     let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([382.0, 148.0])
-        .with_min_inner_size([360.0, 140.0])
+        .with_inner_size([382.0, 172.0])
+        .with_min_inner_size([360.0, 164.0])
         .with_always_on_top()
         .with_title("Chasefire");
 
@@ -134,7 +134,7 @@ impl Window {
             {
                 Ok(cues) => {
                     let cues: Vec<cue::Cue> = cues;
-                    notes.push(format!("{} cues", cues.len()));
+                    notes.push(format!("{} cues loaded", cues.len()));
                     runner.set_cues(cues);
                 }
                 Err(error) => notes.push(format!("cues: {error}")),
@@ -143,7 +143,9 @@ impl Window {
 
         if let Some(target) = &startup.osc {
             match runner.connect_osc(target) {
-                Ok(()) => notes.push(format!("OSC → {target}")),
+                // The left-hand strip already shows where it goes, so
+                // only a failure is worth a line in the log.
+                Ok(()) => {}
                 Err(error) => notes.push(format!("OSC: {error}")),
             }
         }
@@ -152,7 +154,7 @@ impl Window {
         // one, so launching the thing with no arguments still does something
         // rather than sitting there looking broken.
         match runner.open_input(startup.device.as_deref(), startup.channel) {
-            Ok(()) => notes.push(format!("in: {}", runner.device_name().unwrap_or("?"))),
+            Ok(()) => {}
             // Not fatal, and deliberately so. No sound card is a thing to say
             // in the window, not a reason for the window to vanish.
             Err(error) => notes.push(format!("no input: {error}")),
@@ -281,12 +283,40 @@ impl eframe::App for Window {
                 });
             });
 
-            // The little log, centred under everything. Newest on top.
-            ui.add_space(1.0);
-            ui.vertical_centered(|ui| {
-                for line in &self.log {
-                    ui.label(egui::RichText::new(line).size(10.0).weak());
-                }
+            // The bottom strip, split in two. On the left, what this thing is
+            // wired to — nobody staring at a corner of a screen for six hours
+            // should have to remember which card and which machine they picked.
+            // On the right, what just happened.
+            ui.add_space(2.0);
+            ui.separator();
+            ui.horizontal_top(|ui| {
+                ui.add_space(2.0);
+                let half = (ui.available_width() - 10.0) * 0.5;
+
+                ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(small(&match self.runner.device_name() {
+                            Some(name) => format!(
+                                "in  {}  ch {}",
+                                shorten(name),
+                                self.runner.channel().unwrap_or(1)
+                            ),
+                            None => "in  —".to_string(),
+                        }));
+                        ui.label(small(&match self.runner.output_target() {
+                            Some(target) => format!("out  OSC {target}"),
+                            None => "out  —".to_string(),
+                        }));
+                    });
+                });
+
+                ui.allocate_ui(egui::vec2(half, 30.0), |ui| {
+                    ui.vertical(|ui| {
+                        for line in &self.log {
+                            ui.label(small(line));
+                        }
+                    });
+                });
             });
         }
 
@@ -314,6 +344,25 @@ impl eframe::App for Window {
         // deadline and it must never wait on this.
         context.request_repaint_after(std::time::Duration::from_millis(33));
     }
+}
+
+/// Small, dim text: present when looked for, invisible when not.
+fn small(text: &str) -> egui::RichText {
+    egui::RichText::new(text).size(10.0).weak()
+}
+
+/// Device names carry the whole ALSA or WASAPI incantation, which is no use in
+/// a strip this wide. Keep the end, which is the part that identifies the card.
+fn shorten(name: &str) -> String {
+    const ROOM: usize = 22;
+    if name.chars().count() <= ROOM {
+        return name.to_string();
+    }
+    let tail: String = name
+        .chars()
+        .skip(name.chars().count().saturating_sub(ROOM - 1))
+        .collect();
+    format!("…{tail}")
 }
 
 /// If the frame we just drew was captured, write it out and quit.

@@ -91,16 +91,20 @@ impl Mood {
         matches!(self, Mood::Playing | Mood::Shivering | Mood::Wobbling)
     }
 
-    /// Frames per second for this mood's loop. Sleeping is slow and breathy;
-    /// playing is brisk. Nothing here needs to be smooth — it needs to be
-    /// readable at a glance from two metres away.
+    /// Frames per second for this mood's loop.
+    ///
+    /// These are the rates the person who drew the frames asked for, not rates
+    /// picked by eye before there was any art: they came with the delivery, in
+    /// `sprites.json`. Whoever timed the drawings knows how fast they want to
+    /// run, and it shows — the shivering is quicker than the playing, which is
+    /// not something I would have thought of.
     pub fn animation_fps(self) -> f32 {
         match self {
-            Mood::Asleep => 4.0,
-            Mood::Pyjamas => 6.0,
+            Mood::Asleep => 6.0,
+            Mood::Pyjamas => 8.0,
             Mood::Playing => 12.0,
-            Mood::Shivering => 12.0,
             Mood::Wobbling => 10.0,
+            Mood::Shivering => 14.0,
         }
     }
 

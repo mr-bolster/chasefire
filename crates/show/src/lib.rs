@@ -122,6 +122,18 @@ impl Runner {
         Ok(())
     }
 
+    /// Where cues are being sent, for the window to show. Somebody staring at
+    /// a corner of a screen for six hours should not have to remember which
+    /// machine they pointed this at.
+    pub fn output_target(&self) -> Option<String> {
+        self.output.as_ref().map(|sink| sink.target().to_string())
+    }
+
+    /// Which input channel is being read.
+    pub fn channel(&self) -> Option<usize> {
+        self.capture.as_ref().map(|capture| capture.channel())
+    }
+
     pub fn set_armed(&mut self, armed: bool) {
         self.engine.set_armed(armed);
     }
