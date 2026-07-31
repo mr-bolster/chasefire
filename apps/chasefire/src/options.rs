@@ -26,13 +26,14 @@ const CUE_ROW: f32 = 23.0;
 /// How many cues should be visible without scrolling when there is room.
 const CUES_VISIBLE: f32 = 20.0;
 
-/// Where the money goes.
+/// Where the money goes — by way of the site, on purpose.
 ///
-/// ⚠ VERIFY BEFORE RELEASE. A donate button pointing at the wrong handle sends
-/// a stranger the money people meant for the author, and unlike every other
-/// mistake in this file it cannot be undone by a later commit. This is a guess
-/// based on the project name and has not been confirmed by anybody.
-const PAYPAL: &str = "https://paypal.me/mrbolster";
+/// Not a payment address baked into the binary. Two reasons, and both are
+/// worth more than the one click it costs: an address in a public repository
+/// is an address harvesters will find, and a payment provider that changes
+/// would otherwise mean shipping a new build to everybody who has this one.
+/// The page can be edited in an afternoon; a released binary cannot.
+pub const DONATE_URL: &str = "https://mrbolster.app/donate";
 const HOME_PAGE: &str = "https://mrbolster.app";
 
 /// Rates worth offering, and what each is called on a spec sheet.
@@ -507,7 +508,7 @@ fn support_section(ui: &mut egui::Ui) {
         // Deliberately a button and not a link buried in a sentence. Somebody
         // who has decided to pay should not have to hunt for where.
         let donate = egui::Button::new(
-            egui::RichText::new("Donate with PayPal")
+            egui::RichText::new("Chip in")
                 .size(14.0)
                 .strong()
                 .color(egui::Color32::WHITE),
@@ -515,8 +516,8 @@ fn support_section(ui: &mut egui::Ui) {
         .fill(egui::Color32::from_rgb(0, 112, 186))
         .min_size(egui::vec2(190.0, 32.0));
 
-        if ui.add(donate).on_hover_text(PAYPAL).clicked() {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(PAYPAL));
+        if ui.add(donate).on_hover_text(DONATE_URL).clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(DONATE_URL));
         }
 
         ui.add_space(GAP);
@@ -528,6 +529,7 @@ fn support_section(ui: &mut egui::Ui) {
 
     ui.add_space(GAP);
     section(ui, "About");
+
     grid(ui, "about", |ui| {
         label(ui, "Version");
         ui.horizontal(|ui| {
@@ -566,6 +568,18 @@ fn support_section(ui: &mut egui::Ui) {
         ui.hyperlink_to(
             "github.com/mr-bolster/chasefire",
             "https://github.com/mr-bolster/chasefire",
+        );
+        ui.end_row();
+
+        label(ui, "Settings live in");
+        ui.label(
+            egui::RichText::new(crate::settings::Settings::location())
+                .size(11.0)
+                .monospace(),
+        )
+        .on_hover_text(
+            "Put a file called chasefire.json next to the executable and it will be used instead — \
+             for a stick that travels with its own setup.",
         );
         ui.end_row();
 

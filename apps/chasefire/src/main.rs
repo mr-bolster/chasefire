@@ -7,6 +7,8 @@
 
 mod options;
 mod pablo_view;
+mod reminder;
+mod settings;
 
 use eframe::egui;
 use pablo::{Mood, Presentation};
@@ -234,6 +236,8 @@ struct Window {
     flash: Option<Flash>,
     /// The last input health reported, so it is said once and not every frame.
     last_health: show::Health,
+    settings: settings::Settings,
+    reminder: reminder::Reminder,
     options: options::Options,
 }
 
@@ -300,6 +304,9 @@ impl Flash {
 
 impl Window {
     fn new(startup: Startup, screenshot: Option<(String, f32)>) -> Self {
+        // Remembered settings first, then anything said on the command line,
+        // which wins — somebody typing a device name means it.
+        let (settings, settings_note) = settings::Settings::load();
         let mut runner = Runner::new(25);
         // Nothing is armed because a window opened. Arming is a decision, and
         // the only way to make it by accident should be to say so out loud.
@@ -307,6 +314,9 @@ impl Window {
         runner.pin_frame_rate(startup.fps);
 
         let mut notes = Vec::new();
+        if let Some(note) = settings_note {
+            notes.push(note);
+        }
         if startup.arm {
             notes.push("armed from the command line".to_string());
         }
@@ -357,6 +367,8 @@ impl Window {
             screenshot,
             log: notes.into_iter().rev().take(2).collect(),
             last_health: show::Health::Closed,
+            reminder: reminder::Reminder::new(settings.reminders_dismissed),
+            settings,
             options: options::Options::new(
                 startup.device.clone(),
                 startup.channel,
@@ -375,6 +387,23 @@ impl Window {
     fn note(&mut self, line: String) {
         self.log.push_front(line);
         self.log.truncate(2);
+    }
+
+    /// Write the settings down. Failing to is worth a line in the log and
+    /// nothing more: not being able to save a preference is not a reason to
+    /// interrupt anybody.
+    fn remember(&mut self) {
+        self.settings.device = self.runner.device_name().map(str::to_string);
+        self.settings.channel = self.runner.channel().unwrap_or(1);
+        self.settings.frame_rate = self.runner.pinned_frame_rate();
+        self.settings.osc_target = self.runner.output_target();
+        self.settings.offset_frames = self.runner.offset_frames();
+        self.settings.freewheel_frames = self.runner.freewheel_frames();
+        self.settings.pablo = self.presentation == Presentation::Pablo;
+        self.settings.always_on_top = self.always_on_top;
+        if let Err(error) = self.settings.save() {
+            self.note(format!("settings not saved: {error}"));
+        }
     }
 
     fn timecode_text(&self) -> String {
@@ -735,6 +764,16 @@ impl eframe::App for Window {
 
         self.options
             .show(context, &mut self.runner, &mut self.presentation);
+
+        // The reminder waits for the window to settle, and stands down for good
+        // the moment a show is running. `busy` is the whole safety rule.
+        let busy = self.runner.is_armed() || self.runner.timecode().is_some();
+        self.reminder
+            .update(context.input(|input| input.stable_dt), busy);
+        if self.reminder.show(context, options::DONATE_URL) {
+            self.settings.reminders_dismissed = self.reminder.dismissed();
+            self.remember();
+        }
 
         // The flash goes on a foreground layer, painted after everything and
         // above it. Behind the content it was almost invisible: the widgets
