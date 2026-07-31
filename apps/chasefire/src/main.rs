@@ -39,6 +39,9 @@ struct Startup {
     arm: bool,
     /// Show the transport marks instead of the little guitarist.
     sober: bool,
+    /// Open the settings window straight away. For a machine being set up, and
+    /// for anybody who would rather start where the work is.
+    options: bool,
     /// Force a flash on the first frame, so a picture can be taken of it.
     /// Documentation and eyeballing only — nothing fires here.
     demo_flash: Option<String>,
@@ -65,6 +68,7 @@ fn parse_startup() -> Startup {
         demo_flash: value("--demo-flash"),
         arm: arguments.iter().any(|argument| argument == "--arm"),
         sober: arguments.iter().any(|argument| argument == "--sober"),
+        options: arguments.iter().any(|argument| argument == "--options"),
     }
 }
 
@@ -416,7 +420,12 @@ impl Window {
             reminder: reminder::Reminder::new(settings.reminders_dismissed),
             settings_dirty_since: None,
             settings,
-            options: options::Options::new(device.clone(), channel, osc.clone(), cue_file.clone()),
+            options: {
+                let mut options =
+                    options::Options::new(device.clone(), channel, osc.clone(), cue_file.clone());
+                options.open = startup.options;
+                options
+            },
             flash: match startup.demo_flash.as_deref() {
                 Some("failed") => Some(Flash::failed()),
                 Some(_) => Some(Flash::fired()),
