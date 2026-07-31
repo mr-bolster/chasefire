@@ -1,0 +1,17 @@
+[package]
+name = "show"
+description = "The running show: capture, chaser, cue engine and outputs, wired together"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+audio = { path = "../audio" }
+chase = { path = "../chase" }
+cue = { path = "../cue" }
+ltc = { path = "../ltc" }
+pablo = { path = "../pablo" }
+sink = { path = "../sink" }

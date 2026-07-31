@@ -22,7 +22,7 @@ drawing has failed no matter how nice it looks up close.
 
 Pablo. A young man with **short dark hair**, who **plays the guitar**. Friendly,
 a bit scruffy, entirely at home slumped over an amplifier at 4am. Chibi
-proportions — big head, small body — because that is what reads at 32 pixels.
+proportions — big head, small body — because that is what reads at this size.
 Think NES and SNES era character sprites, not modern high-resolution pixel art.
 
 His guitar is with him in every single frame. It is his defining prop.
@@ -32,10 +32,10 @@ His guitar is with him in every single frame. It is his defining prop.
 | | |
 |---|---|
 | Format | PNG with a real alpha channel |
-| Frame size | **32 × 32 pixels**, exactly |
+| Frame size | **48 × 48 pixels**, exactly |
 | Background | **Fully transparent**, alpha 0. Not white, not a colour key |
 | Layout | One horizontal strip per animation: frames left to right, no gaps, no padding, no labels |
-| Sheet width | Exactly `32 × number of frames`. Sheet height exactly 32 |
+| Sheet width | Exactly `48 × number of frames`. Sheet height exactly 48 |
 | Edges | **Hard pixel edges only.** No anti-aliasing, no soft edges, no semi-transparent pixels except where noted |
 | Outline | Every solid shape gets a **1 pixel dark outline** in `#241E1B`. The window sits over an unknown desktop, so he has to hold up against any background |
 | Palette | Only the colours below. No gradients, no dithering beyond simple 2-colour patterns |
@@ -107,7 +107,7 @@ trust it.
 
 ### 6. `flourish-midi` — 4 frames
 
-Not Pablo. An effect drawn **on its own transparent 32×32 strip**, to be
+Not Pablo. An effect drawn **on its own transparent 48×48 strip**, to be
 overlaid on top of him when a cue fires: two or three **musical notes** bursting
 out and upward from where the guitar would be, growing and fading over 4 frames.
 
@@ -125,7 +125,7 @@ to the right. Growing and fading over 4 frames.
 
 - Anti-aliased or blurry edges. This must be true pixel art, every pixel placed.
 - Any background that is not fully transparent.
-- Frames that are not exactly 32×32, or a strip with gaps or padding between them.
+- Frames that are not exactly 48×48, or a strip with gaps or padding between them.
 - The character drifting position between frames of the same animation.
 - Colours outside the palette, or gradients.
 - His hair, skin tone, shirt or guitar changing between frames or between
@@ -139,14 +139,14 @@ to the right. Growing and fading over 4 frames.
 Eight PNG files, named exactly:
 
 ```
-asleep.png            8 frames    →  256 × 32
-pyjamas.png           6 frames    →  192 × 32
-playing.png           8 frames    →  256 × 32
-wobbling.png          6 frames    →  192 × 32
-shivering.png         6 frames    →  192 × 32
-flourish-midi.png     4 frames    →  128 × 32
-flourish-osc.png      4 frames    →  128 × 32
-flourish-network.png  4 frames    →  128 × 32
+asleep.png            8 frames    →  384 × 48
+pyjamas.png           6 frames    →  288 × 48
+playing.png           8 frames    →  384 × 48
+wobbling.png          6 frames    →  288 × 48
+shivering.png         6 frames    →  288 × 48
+flourish-midi.png     4 frames    →  192 × 48
+flourish-osc.png      4 frames    →  192 × 48
+flourish-network.png  4 frames    →  192 × 48
 ```
 
 Plus, if it is easy: a single reference image of Pablo standing still, at any

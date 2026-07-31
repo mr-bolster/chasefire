@@ -1,0 +1,16 @@
+[package]
+name = "chasefire"
+description = "Chasefire: the floating window that runs the show"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ltc = { path = "../../crates/ltc" }
+pablo = { path = "../../crates/pablo" }
+show = { path = "../../crates/show" }
+eframe = "0.35"
+png = "0.17"
