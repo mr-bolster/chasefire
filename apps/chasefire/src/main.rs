@@ -59,8 +59,8 @@ fn main() -> eframe::Result {
         .map(|path| (path, startup.screenshot_after));
 
     let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([360.0, 132.0])
-        .with_min_inner_size([300.0, 120.0])
+        .with_inner_size([382.0, 148.0])
+        .with_min_inner_size([360.0, 140.0])
         .with_always_on_top()
         .with_title("Chasefire");
 
@@ -112,7 +112,10 @@ struct Window {
     always_on_top: bool,
     /// Where to write a picture of the window, and when.
     screenshot: Option<(String, f32)>,
-    last_message: Option<String>,
+    /// The last couple of things that happened. Two lines is deliberate: it
+    /// is enough to see a cue fire and still read what came before it, and not
+    /// enough to turn the corner of someone's screen into a log window.
+    log: std::collections::VecDeque<String>,
 }
 
 impl Window {
@@ -162,8 +165,14 @@ impl Window {
             always_on_top: true,
             // A few frames of grace so the layout has settled before the shot.
             screenshot,
-            last_message: (!notes.is_empty()).then(|| notes.join("  ·  ")),
+            log: notes.into_iter().rev().take(2).collect(),
         }
+    }
+
+    /// Add a line, keeping only the newest two.
+    fn note(&mut self, line: String) {
+        self.log.push_front(line);
+        self.log.truncate(2);
     }
 
     fn timecode_text(&self) -> String {
@@ -179,7 +188,7 @@ impl eframe::App for Window {
         let context = ui.ctx().clone();
         let context = &context;
         for event in self.runner.poll() {
-            self.last_message = Some(match event {
+            let line = match event {
                 Event::Fired { firing, sent } => match sent {
                     Ok(()) => {
                         self.pablo.fire(Runner::flourish_of(&firing));
@@ -191,7 +200,8 @@ impl eframe::App for Window {
                     format!("locked {fps:.2} fps, counting at {nominal}")
                 }
                 Event::SignalLost => "signal lost".to_string(),
-            });
+            };
+            self.note(line);
         }
 
         let situation = self.runner.situation();
@@ -205,11 +215,12 @@ impl eframe::App for Window {
                 ui.vertical(|ui| {
                     ui.add_space(4.0);
 
-                    // The one thing that has to be readable across a dark room.
+                    // The one thing that has to be readable across a dark
+                    // room, so it gets every pixel the layout can spare.
                     ui.label(
                         egui::RichText::new(self.timecode_text())
                             .monospace()
-                            .size(30.0)
+                            .size(40.0)
                             .strong(),
                     );
 
@@ -235,24 +246,25 @@ impl eframe::App for Window {
                                 .color(egui::Color32::BLACK),
                         )
                         .fill(colour)
-                        .min_size(egui::vec2(96.0, 26.0));
+                        // The panic button. Big enough to hit without looking.
+                        .min_size(egui::vec2(120.0, 32.0));
 
                         if ui.add(button).clicked() {
                             self.runner.set_armed(!armed);
                         }
 
                         if ui
-                            .add(egui::Button::new("Options").min_size(egui::vec2(70.0, 26.0)))
+                            .add(egui::Button::new("Options").min_size(egui::vec2(80.0, 32.0)))
                             .clicked()
                         {
-                            self.last_message = Some("Options: not built yet".into());
+                            self.note("Options: not built yet".into());
                         }
 
                         // Always-on-top is the whole reason this window exists,
                         // but somebody will want it off while they work.
                         let pin = if self.always_on_top { "📌" } else { "📍" };
                         if ui
-                            .add(egui::Button::new(pin).min_size(egui::vec2(28.0, 26.0)))
+                            .add(egui::Button::new(pin).min_size(egui::vec2(32.0, 32.0)))
                             .on_hover_text("Keep this window above the others")
                             .clicked()
                         {
@@ -269,10 +281,13 @@ impl eframe::App for Window {
                 });
             });
 
-            if let Some(message) = &self.last_message {
-                ui.add_space(2.0);
-                ui.label(egui::RichText::new(message).size(10.0).weak());
-            }
+            // The little log, centred under everything. Newest on top.
+            ui.add_space(1.0);
+            ui.vertical_centered(|ui| {
+                for line in &self.log {
+                    ui.label(egui::RichText::new(line).size(10.0).weak());
+                }
+            });
         }
 
         // The space bar arms and disarms: the panic button must not need a
