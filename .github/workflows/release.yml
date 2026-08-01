@@ -147,7 +147,10 @@ jobs:
 
           cp README.md LICENSE LICENSE-MPL-2.0 dist/
           cp -r examples dist/examples
-          ditto -c -k --keepParent --sequesterRsrc dist chasefire-macos-universal.zip
+          # Named for what it is: unzipping should give a folder called
+          # Chasefire, not one called dist.
+          mv dist Chasefire
+          ditto -c -k --keepParent --sequesterRsrc Chasefire chasefire-macos-universal.zip
 
       - uses: actions/upload-artifact@v4
         with:

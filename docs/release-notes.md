@@ -59,6 +59,16 @@ work it out.
   through a hundred nights in a hundred venues. Try it in rehearsal before you
   try it on a show.
 - **Linux** needs ALSA at runtime; on Debian and Ubuntu that is already there.
+- **macOS is new here, and nobody has launched it yet.** It builds, it passes
+  the whole test suite on Apple's own runners — including the MIDI and MTC
+  tests, against real CoreMIDI ports — and the app bundle is signed ad-hoc so
+  it will run. What no machine can tell you is whether it asks for the
+  microphone properly and hears timecode when it does. If you try it, say how
+  it went.
+
+  It is not notarised, so Gatekeeper will refuse it on the first go. Since
+  macOS Sequoia the Control-click trick is gone: **System Settings › Privacy &
+  Security**, scroll to the bottom, **Open Anyway**. Once per version.
 
 ## Two languages
 
