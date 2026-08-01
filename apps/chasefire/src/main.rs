@@ -38,8 +38,13 @@ struct Startup {
     /// the window says ARMED in green either way, and the log says where it
     /// came from.
     arm: bool,
-    /// Show the transport marks instead of the little guitarist.
+    /// Show the transport marks instead of the little guitarist. This is the
+    /// default now, so the flag is kept only for scripts and habits that
+    /// already have it.
     sober: bool,
+    /// Ask for the little guitarist, which is no longer what turns up on its
+    /// own.
+    pablo: bool,
     /// Send MIDI Time Code out of this port from the moment it starts. For a
     /// machine whose whole job is to convert, booting with nobody in front of
     /// it.
@@ -73,6 +78,7 @@ fn parse_startup() -> Startup {
         demo_flash: value("--demo-flash"),
         arm: arguments.iter().any(|argument| argument == "--arm"),
         sober: arguments.iter().any(|argument| argument == "--sober"),
+        pablo: arguments.iter().any(|argument| argument == "--pablo"),
         mtc: value("--mtc"),
         options: arguments.iter().any(|argument| argument == "--options"),
     }
@@ -344,6 +350,9 @@ impl Window {
         }
         if startup.sober {
             settings.pablo = false;
+        }
+        if startup.pablo {
+            settings.pablo = true;
         }
 
         // From here on the settings are the single source of truth: whatever

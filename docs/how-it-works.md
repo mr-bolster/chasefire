@@ -27,10 +27,14 @@ He cannot lie: a test walks every combination of armed, locked, freewheeling and
 signal level, and fails if the face he pulls ever disagrees with whether a cue
 would really go out.
 
-Not everyone wants a cartoon on the screen at work, so `--sober` swaps him for
-the transport symbols the trade already reads without thinking — stop, pause,
-play — animated through the same five states. Same information, same rules, no
-cartoon. The resting mark is also the application's icon.
+Not everyone wants a cartoon on the screen at work, so what turns up on its own
+is the transport symbols the trade already reads without thinking — stop,
+pause, play — animated through the same five states. Same information, same
+rules, no cartoon. The resting mark is also the application's icon.
+
+Pablo is one click away in Options, or `--pablo` on the command line, for
+whoever wants him. He is worth having: peripheral vision reads a little man
+who has fallen asleep far faster than it reads a symbol.
 
 And when a cue fires the whole window flashes: green when it went out, **red
 when it did not**, longer and stronger, because a cue that failed is the one

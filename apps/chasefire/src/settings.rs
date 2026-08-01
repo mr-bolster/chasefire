@@ -58,7 +58,11 @@ impl Default for Settings {
             cue_file: None,
             offset_frames: 0,
             freewheel_frames: 8,
-            pablo: true,
+            // Transport marks, not the guitarist. Somebody opening this for
+            // the first time is deciding whether to trust it with a show, and
+            // a cartoon is not the first impression that helps — Pablo is
+            // there for whoever wants him, one click away in Options.
+            pablo: false,
             always_on_top: true,
             language: crate::text::Language::default(),
             reminders_dismissed: 0,
@@ -140,6 +144,9 @@ mod tests {
         assert_eq!(settings.channel, 1);
         assert_eq!(settings.offset_frames, 0);
         assert!(settings.frame_rate.is_none(), "work it out unless told");
+        // Transport marks on a first run. Somebody opening this to decide
+        // whether to trust it with a show should not be met by a cartoon.
+        assert!(!settings.pablo, "the guitarist turned up uninvited");
     }
 
     #[test]
