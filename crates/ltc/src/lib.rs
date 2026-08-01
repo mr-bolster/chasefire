@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) Leo Bolster.
+
 //! SMPTE Linear Timecode (LTC), decoded from — and encoded to — raw audio samples.
 //!
 //! This crate does no I/O of any kind. You feed it `f32` samples from whatever

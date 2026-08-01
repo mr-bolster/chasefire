@@ -159,5 +159,24 @@ On Linux you will need ALSA's headers: `sudo apt install libasound2-dev`.
 
 ## Licence
 
-GPL-3.0-or-later. The source is open and always will be. Ready-made signed
-builds are what you pay for — once, not every year.
+Two, on purpose, and the line between them is not arbitrary.
+
+**The engine is MPL-2.0** — `ltc`, `cue`, `chase`, `audio`, `sink`, `show`.
+That is the decoder, the firing rules, the chaser and the outputs: the parts
+where the edge cases live and where being right matters. MPL is file-level
+copyleft, so improvements to those files stay open and can be used by anything,
+including software that is not open at all.
+
+**The program is GPL-3.0-or-later** — everything under `apps/`, and the
+`pablo` crate, which carries commissioned artwork.
+
+The source is open and always will be. Ready-made signed builds are what you
+pay for — once, not every year.
+
+### About patches
+
+Please **open an issue rather than a pull request.** Not out of unfriendliness:
+merged code belongs to whoever wrote it, and a handful of accepted lines can
+permanently prevent the author from licensing his own work another way later.
+Describe the problem, or the fix, and it will be written here and credited to
+you in the commit.
