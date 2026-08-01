@@ -11,6 +11,29 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Not a blocker, a nag. Two READMEs drift the moment one is edited alone, and
+  # the English one already spent days claiming MIDI was "still to come" after
+  # it shipped. This shouts on the pull request instead of finding out months
+  # later that the Spanish one describes a program that no longer exists.
+  translations:
+    name: Are both READMEs moving together?
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compare what changed
+        run: |
+          base="origin/${{ github.base_ref }}"
+          changed() { git diff --name-only "$base"...HEAD | grep -qx "$1"; }
+          if changed README.md && ! changed README.es.md; then
+            echo "::warning file=README.es.md::README.md changed and README.es.md did not."
+          fi
+          if changed README.es.md && ! changed README.md; then
+            echo "::warning file=README.md::README.es.md changed and README.md did not."
+          fi
+
   test:
     name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
