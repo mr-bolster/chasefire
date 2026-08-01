@@ -808,6 +808,7 @@ impl Options {
                             .on_hover_text(words.args_tooltip);
                     });
 
+                    let mut lines = 0usize;
                     for (index, cue) in cues.iter_mut().enumerate() {
                         // The row number is the real one whatever is on show:
                         // duplicating and deleting work on the list, not on
@@ -979,6 +980,32 @@ impl Options {
                                 egui::Shape::rect_filled(block.response.rect, 2.0, stripe),
                             );
                         }
+                        lines += cue.steps.len();
+                    }
+
+                    // Rule the rest of the box. Empty space is a box that has
+                    // run out; ruled lines are a list with room in it, and the
+                    // difference matters when somebody is looking for where the
+                    // next cue goes.
+                    let width = ui.max_rect().width();
+                    let stripe = ui.visuals().faint_bg_color;
+                    let rule = ui.visuals().widgets.noninteractive.bg_stroke.color;
+                    ui.add_space(1.0);
+                    for spare in lines..(CUES_VISIBLE as usize) {
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(width, CUE_ROW - 4.0),
+                            egui::Sense::hover(),
+                        );
+                        if spare % 2 == 1 {
+                            ui.painter().rect_filled(rect, 2.0, stripe);
+                        }
+                        // A hairline along the bottom, so the rows read as rows
+                        // rather than as bands of shading.
+                        ui.painter().hline(
+                            rect.x_range(),
+                            rect.bottom(),
+                            egui::Stroke::new(1.0, rule),
+                        );
                     }
                 });
         }
