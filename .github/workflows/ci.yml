@@ -40,11 +40,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       # cpal talks to ALSA on Linux, and alsa-sys needs its headers to build.
-      # The Windows runner needs nothing: WASAPI comes with the system.
+      # Windows and macOS need nothing: WASAPI and CoreAudio come with the
+      # system, as do WinMM and CoreMIDI. macOS runs the virtual-MIDI-port
+      # tests too — CoreMIDI has them, so the same `#[cfg(unix)]` tests that
+      # cover Linux cover it.
       - name: ALSA headers
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
