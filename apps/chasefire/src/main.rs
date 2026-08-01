@@ -706,15 +706,27 @@ impl eframe::App for Window {
                         // about it: somebody could have it running, or not
                         // running, and no way to tell from here.
                         if let Some(port) = self.runner.mtc_port() {
+                            // Red when the port has stopped taking it. A clock
+                            // that died quietly while the badge still said MTC
+                            // would be a lie told in green.
+                            let alive = self.runner.mtc_alive();
                             ui.add_space(8.0);
                             ui.label(
                                 egui::RichText::new(words.mtc_badge)
                                     .size(11.0)
                                     .monospace()
                                     .strong()
-                                    .color(egui::Color32::from_rgb(120, 200, 140)),
+                                    .color(if alive {
+                                        egui::Color32::from_rgb(120, 200, 140)
+                                    } else {
+                                        egui::Color32::from_rgb(216, 92, 78)
+                                    }),
                             )
-                            .on_hover_text(words.mtc_sending.replace("{}", port));
+                            .on_hover_text(if alive {
+                                words.mtc_sending.replace("{}", port)
+                            } else {
+                                words.mtc_died.replace("{}", port)
+                            });
                         }
                         // The short word, not the sentence: it balances against
                         // the source on the left instead of running off the

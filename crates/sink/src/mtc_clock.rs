@@ -22,7 +22,9 @@
 use crate::midi::MidiSink;
 use crate::mtc::{full_frame, quarter_frame, Rate};
 use ltc::Timecode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender, TryRecvError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// What the clock is told from outside.
@@ -38,6 +40,10 @@ enum Word {
 pub struct MtcClock {
     words: Sender<Word>,
     port: String,
+    /// False once the port has refused to take anything. Interfaces get
+    /// unplugged mid-show, and a clock that has quietly stopped while the
+    /// window still says it is running is worse than one that never started.
+    alive: Arc<AtomicBool>,
 }
 
 impl MtcClock {
@@ -46,6 +52,8 @@ impl MtcClock {
         let mut sink = MidiSink::open(port)?;
         let name = sink.port().to_string();
         let (words, inbox) = mpsc::channel();
+        let alive = Arc::new(AtomicBool::new(true));
+        let mine = Arc::clone(&alive);
 
         std::thread::Builder::new()
             .name("chasefire-mtc".into())
@@ -72,7 +80,7 @@ impl MtcClock {
                                     // quarter-frames would take two frames to
                                     // say it, and after a seek the receiver
                                     // needs it now.
-                                    let _ = sink.send_raw(&full_frame(at, rate));
+                                    note(&mine, sink.send_raw(&full_frame(at, rate)));
                                     piece = 0;
                                     sequence_at = Some(at);
                                     next_at = Instant::now();
@@ -105,7 +113,7 @@ impl MtcClock {
                         sequence_at = position.map(|(at, _)| at);
                     }
                     if let Some(at) = sequence_at {
-                        let _ = sink.send_raw(&quarter_frame(piece, at, rate));
+                        note(&mine, sink.send_raw(&quarter_frame(piece, at, rate)));
                     }
                     piece = (piece + 1) & 0x07;
                     next_at += quarter;
@@ -119,11 +127,20 @@ impl MtcClock {
             })
             .map_err(|error| error.to_string())?;
 
-        Ok(Self { words, port: name })
+        Ok(Self {
+            words,
+            port: name,
+            alive,
+        })
     }
 
     pub fn port(&self) -> &str {
         &self.port
+    }
+
+    /// Is the port still taking what it is given?
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
     }
 
     /// Tell it where the show is. Cheap enough to call on every frame.
@@ -135,6 +152,15 @@ impl MtcClock {
     /// The timecode has gone.
     pub fn lost(&self) {
         let _ = self.words.send(Word::Lost);
+    }
+}
+
+/// Remember whether the port is still there. Once it has failed it stays
+/// failed: a port that came back would need reopening anyway, and a status
+/// that flickers is one nobody believes.
+fn note(alive: &AtomicBool, outcome: std::io::Result<()>) {
+    if outcome.is_err() {
+        alive.store(false, Ordering::Relaxed);
     }
 }
 

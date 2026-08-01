@@ -214,3 +214,65 @@ fn it_answers_the_clock_because_silence_gets_a_session_dropped() {
     }
     let _ = session;
 }
+
+/// The far end vanishes without saying goodbye — cable out, machine off.
+///
+/// Ignored by default because it has to wait out the real timeout, and half a
+/// minute on every commit is a tax nobody should pay. Run it by hand:
+/// `cargo test -p rtpmidi -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn a_session_that_goes_quiet_stops_claiming_to_be_up() {
+    let their_port = free_pair();
+    let their_control = socket(their_port);
+    let their_data = socket(their_port + 1);
+
+    let our_port = free_pair();
+    let session = Session::start(
+        "Chasefire",
+        our_port,
+        Some(format!("127.0.0.1:{their_port}").parse().unwrap()),
+    )
+    .unwrap();
+
+    for what in ["control", "data"] {
+        let socket = if what == "control" {
+            &their_control
+        } else {
+            &their_data
+        };
+        let (message, from) = expect(socket, what);
+        if let Control::Invitation { token, .. } = message {
+            socket
+                .send_to(
+                    &Control::Accepted {
+                        token,
+                        ssrc: 0xABCD,
+                        name: "far end".into(),
+                    }
+                    .to_bytes(),
+                    from,
+                )
+                .unwrap();
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.status() != Status::Joined && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(session.status(), Status::Joined, "never came up");
+
+    // Gone. No goodbye, no reply to the clock, nothing.
+    drop(their_control);
+    drop(their_data);
+
+    let deadline = Instant::now() + rtpmidi::session::SILENCE_MEANS_GONE + Duration::from_secs(10);
+    while session.status() == Status::Joined && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert_eq!(
+        session.status(),
+        Status::Lost,
+        "still claiming to be up after the far end went away"
+    );
+}

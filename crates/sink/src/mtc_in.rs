@@ -160,21 +160,51 @@ fn rate_of(code: u8) -> Rate {
     }
 }
 
-/// Move a position on by two frames, wrapping through seconds and minutes.
+/// Move a position on by two frames.
+///
+/// Drop frame is the whole difficulty. At 29.97 the numbers **00 and 01 do not
+/// exist** at the top of every minute except every tenth — they are skipped so
+/// that the clock keeps up with real time. Counting straight through produces
+/// a timecode that never happens, and a cue programmed a frame away from a
+/// minute boundary then never lines up with it.
 fn advanced_by_two(at: Timecode, rate: Rate) -> Timecode {
-    let fps = rate.fps().round() as u32;
-    let mut total = (at.hours as u32 * 3600 + at.minutes as u32 * 60 + at.seconds as u32) * fps
-        + at.frames as u32
-        + 2;
-    let day = 24 * 3600 * fps;
-    total %= day;
-    let frames = total % fps;
-    let all_seconds = total / fps;
+    let mut moved = at;
+    for _ in 0..2 {
+        moved = next_frame(moved, rate);
+    }
+    moved
+}
+
+fn next_frame(at: Timecode, rate: Rate) -> Timecode {
+    let fps = rate.fps().ceil() as u8;
+    let mut frames = at.frames + 1;
+    let mut seconds = at.seconds;
+    let mut minutes = at.minutes;
+    let mut hours = at.hours;
+
+    if frames >= fps {
+        frames = 0;
+        seconds += 1;
+        if seconds >= 60 {
+            seconds = 0;
+            minutes += 1;
+            if minutes >= 60 {
+                minutes = 0;
+                hours = (hours + 1) % 24;
+            }
+            // The skip: at the top of every minute but every tenth, the first
+            // two frame numbers are not used.
+            if rate == Rate::Fps2997Drop && minutes % 10 != 0 {
+                frames = 2;
+            }
+        }
+    }
+
     Timecode {
-        hours: (all_seconds / 3600) as u8,
-        minutes: ((all_seconds / 60) % 60) as u8,
-        seconds: (all_seconds % 60) as u8,
-        frames: frames as u8,
+        hours,
+        minutes,
+        seconds,
+        frames,
         drop_frame: at.drop_frame,
     }
 }
@@ -214,6 +244,43 @@ mod tests {
             "a position appeared before the sequence finished: {heard:?}"
         );
         assert_eq!(heard[7], Heard::At(at(10, 11, 12, 15), Rate::Fps25));
+    }
+
+    #[test]
+    fn drop_frame_skips_the_numbers_that_do_not_exist() {
+        // At 29.97 drop frame, 00 and 01 are not used at the top of a minute
+        // unless the minute is a multiple of ten. Counting straight through
+        // reported 10:01:00;01, which never happens — found by audit.
+        let mut reader = Reader::new();
+        let at_the_edge = Timecode {
+            hours: 10,
+            minutes: 0,
+            seconds: 59,
+            frames: 29,
+            drop_frame: true,
+        };
+        match spell(&mut reader, at_the_edge, Rate::Fps2997Drop)[7] {
+            Heard::At(got, _) => {
+                assert_eq!((got.minutes, got.seconds, got.frames), (1, 0, 3));
+            }
+            other => panic!("expected a position, got {other:?}"),
+        }
+
+        // And on the tenth minute nothing is skipped.
+        let mut reader = Reader::new();
+        let tenth = Timecode {
+            hours: 10,
+            minutes: 9,
+            seconds: 59,
+            frames: 29,
+            drop_frame: true,
+        };
+        match spell(&mut reader, tenth, Rate::Fps2997Drop)[7] {
+            Heard::At(got, _) => {
+                assert_eq!((got.minutes, got.seconds, got.frames), (10, 0, 1));
+            }
+            other => panic!("expected a position, got {other:?}"),
+        }
     }
 
     #[test]

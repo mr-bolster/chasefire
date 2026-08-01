@@ -35,11 +35,19 @@ pub fn encode(message: &Message) -> io::Result<Vec<Vec<u8>>> {
             channel,
             note,
             velocity,
-        } => Ok(vec![vec![
-            0x90 | channel_nibble(*channel)?,
-            seven(*note)?,
-            seven(*velocity)?,
-        ]]),
+        } => {
+            // On **and off**. A cue is a moment, not a state, and a note that
+            // is never released is a button held down for the rest of the
+            // night — on a lighting desk mapped to a remote input, exactly
+            // that. Release is note-on with velocity zero, which every
+            // receiver understands and which running status keeps small.
+            let status = 0x90 | channel_nibble(*channel)?;
+            let note = seven(*note)?;
+            Ok(vec![
+                vec![status, note, seven(*velocity)?],
+                vec![status, note, 0],
+            ])
+        }
         Message::MidiProgramChange {
             channel,
             program,
@@ -241,7 +249,7 @@ mod tests {
             velocity: 127,
         })
         .unwrap();
-        assert_eq!(bytes, [vec![0x90, 60, 127]]);
+        assert_eq!(bytes[0], vec![0x90, 60, 127]);
 
         let bytes = encode(&Message::MidiNote {
             channel: 16,
@@ -249,7 +257,25 @@ mod tests {
             velocity: 1,
         })
         .unwrap();
-        assert_eq!(bytes, [vec![0x9F, 60, 1]]);
+        assert_eq!(bytes[0], vec![0x9F, 60, 1]);
+    }
+
+    #[test]
+    fn a_note_is_released_as_well_as_pressed() {
+        // Found by audit, not by a stage — but a stage is where it would have
+        // shown up: a desk with a remote input on this note would have had the
+        // button held down from the moment the cue fired.
+        let messages = encode(&Message::MidiNote {
+            channel: 1,
+            note: 60,
+            velocity: 127,
+        })
+        .unwrap();
+        assert_eq!(
+            messages,
+            [vec![0x90, 60, 127], vec![0x90, 60, 0]],
+            "pressed and released"
+        );
     }
 
     #[test]

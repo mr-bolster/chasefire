@@ -371,6 +371,15 @@ impl Runner {
         self.mtc.as_ref().map(|clock| clock.port())
     }
 
+    /// Is the clock still getting through? False once the port has refused
+    /// something — an interface unplugged mid-show, most likely.
+    pub fn mtc_alive(&self) -> bool {
+        self.mtc
+            .as_ref()
+            .map(|clock| clock.is_alive())
+            .unwrap_or(true)
+    }
+
     fn note_wiring(&mut self, wiring: Wiring) {
         self.wiring
             .retain(|existing| existing.name() != wiring.name());

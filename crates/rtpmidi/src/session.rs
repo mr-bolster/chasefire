@@ -104,6 +104,7 @@ impl Session {
             started: Instant::now(),
             last_invite: None,
             last_sync: None,
+            last_heard: None,
         };
         std::thread::Builder::new()
             .name("chasefire-rtpmidi".into())
@@ -175,6 +176,28 @@ struct Worker {
     started: Instant,
     last_invite: Option<Instant>,
     last_sync: Option<Instant>,
+    /// When anything at all last arrived from the far end. This is the only
+    /// evidence there is that it still exists.
+    last_heard: Option<Instant>,
+}
+
+/// How long a session can go completely silent before it is treated as gone.
+///
+/// The clock exchange runs every ten seconds, so this is three missed rounds.
+/// Shorter would drop a good session over a network hiccup; longer and a show
+/// spends a minute firing cues at a machine that is not there. There is no
+/// other evidence available: RTP-MIDI has no heartbeat beyond the clock.
+pub const SILENCE_MEANS_GONE: Duration = Duration::from_secs(30);
+
+/// Has the far end stopped existing?
+///
+/// Its own function so the rule can be checked without waiting half a minute
+/// for a socket to say nothing. `None` means nothing has ever arrived, which is
+/// a session still being set up rather than one that died.
+fn has_gone_quiet(last_heard: Option<Instant>, threshold: Duration) -> bool {
+    last_heard
+        .map(|at| at.elapsed() > threshold)
+        .unwrap_or(false)
 }
 
 impl Worker {
@@ -216,6 +239,21 @@ impl Worker {
                     self.begin_clock_sync();
                     self.last_sync = Some(Instant::now());
                 }
+            }
+
+            // A session that has gone quiet is a session that is gone. Without
+            // this the status stays "joined" for ever after the far end is
+            // switched off: the window says everything is fine and every cue
+            // reports as sent, while nothing arrives. That is the one failure
+            // this program exists to not have.
+            if self.joined() && has_gone_quiet(self.last_heard, SILENCE_MEANS_GONE) {
+                self.joined_control = false;
+                self.joined_data = false;
+                self.last_heard = None;
+                self.status.store(Status::Lost.code(), Ordering::Relaxed);
+                // And start inviting again, so a machine that comes back
+                // rejoins without anybody going to look for it.
+                self.last_invite = None;
             }
 
             // Anything waiting to go out — and the same call tells us whether
@@ -328,6 +366,9 @@ impl Worker {
     }
 
     fn handle(&mut self, message: Control, from: SocketAddr, on_control: bool) {
+        // Any packet at all is proof of life, clock syncs included — which is
+        // what makes them the heartbeat.
+        self.last_heard = Some(Instant::now());
         match message {
             // Somebody wants to join us. Which end goes first is not up to us:
             // a Mac invites, rtpMIDI invites, Companion can do either.
@@ -411,5 +452,34 @@ impl Worker {
             // We keep no journal, so there is nothing to drop.
             Control::ReceiverFeedback { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_nothing_has_arrived_on_is_not_a_dead_one() {
+        // Still shaking hands. Declaring it dead would stop it ever coming up.
+        assert!(!has_gone_quiet(None, Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn silence_past_the_threshold_is_death() {
+        let a_while_ago = Instant::now() - Duration::from_secs(60);
+        assert!(has_gone_quiet(Some(a_while_ago), Duration::from_secs(30)));
+        assert!(!has_gone_quiet(
+            Some(Instant::now()),
+            Duration::from_secs(30)
+        ));
+    }
+
+    #[test]
+    fn the_threshold_is_three_missed_clock_rounds() {
+        // The clock goes out every ten seconds and is the only heartbeat there
+        // is. Shorter drops a good session over a hiccup; longer and a show
+        // spends a minute firing at a machine that is not there.
+        assert_eq!(SILENCE_MEANS_GONE, Duration::from_secs(30));
     }
 }
