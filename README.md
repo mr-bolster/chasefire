@@ -176,7 +176,12 @@ file-level copyleft, so improvements to those files stay open and can be used
 by anything, including software that is not open at all.
 
 **The program is GPL-3.0-or-later** — everything under `apps/`, and the
-`pablo` crate, which carries commissioned artwork.
+`pablo` crate, which carries the artwork.
+
+Pablo and the transport marks were drawn by Claude to a brief, examples and
+corrections from Leo Bolster. Said plainly here because a credits screen that
+implies a person drew something a machine drew is a small lie, and this project
+does not need one.
 
 The source is open and always will be. Ready-made signed builds are what you
 pay for — once, not every year.

@@ -425,19 +425,36 @@ impl Runner {
     /// a corner of a screen for six hours should not have to remember which
     /// machine they pointed this at.
     pub fn output_target(&self) -> Option<String> {
-        let first = self
-            .default_osc
-            .clone()
-            .or_else(|| self.outputs.names().next().map(|name| name.to_string()))?;
-        let described = self.outputs.describe(&first)?;
-        // "OSC to 10.0.0.5:7000" is what a single output is called; with more
-        // than one, say how many so the corner is honest about it.
-        let count = self.outputs.names().count();
-        Some(if count > 1 {
-            format!("{described} +{}", count - 1)
-        } else {
-            described
-        })
+        let mut names = self.outputs.names();
+        let first = names.next()?.to_string();
+        let rest: Vec<String> = names.map(|name| name.to_string()).collect();
+        if rest.is_empty() {
+            // One output: say where it goes. There is nothing to choose
+            // between, so the address is the useful thing.
+            return self.outputs.describe(&first);
+        }
+        // More than one, and the address of only one of them is worse than
+        // useless — it reads as if that is where everything goes. The names
+        // are what a cue addresses, and they are short because they are names.
+        let mut all = vec![first];
+        all.extend(rest);
+        Some(all.join(" · "))
+    }
+
+    /// Every output spelled out, for the hover. The corner has room for names;
+    /// this is where somebody finds out which machine "mesa" actually is.
+    pub fn outputs_described(&self) -> Vec<String> {
+        self.outputs
+            .names()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|name| {
+                self.outputs
+                    .describe(&name)
+                    .map(|what| format!("{name} — {what}"))
+            })
+            .collect()
     }
 
     /// How long the chaser keeps counting after the signal goes.

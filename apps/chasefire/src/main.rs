@@ -897,13 +897,25 @@ impl eframe::App for Window {
                             None => "—".to_string(),
                         },
                     ));
-                    ui.label(line(
+                    let out = ui.label(line(
                         words.out_label,
                         match self.runner.output_target() {
-                            Some(target) => shorten(&target, LINE),
+                            // Cut from the end, not the start: with four
+                            // outputs the first names are the ones somebody
+                            // is looking for, and `shorten` keeps the tail
+                            // because that is right for a device name and
+                            // wrong for a list.
+                            Some(target) => trim_tail(&target, LINE),
                             None => "—".to_string(),
                         },
                     ));
+                    // Which machine each name actually is, a hover away. The
+                    // corner has room for names and nothing else; this is
+                    // where the addresses live.
+                    let described = self.runner.outputs_described();
+                    if !described.is_empty() {
+                        out.on_hover_text(described.join("\n"));
+                    }
                 });
             });
 
@@ -1021,6 +1033,16 @@ fn small(text: &str) -> egui::RichText {
 /// a strip this wide. Keep the end, which is the part that identifies the card.
 /// Trim a device name to `room` characters, keeping the tail — the end of an
 /// ALSA or WASAPI name is the part that tells one card from another.
+/// Cut a list down, keeping the beginning. The opposite of `shorten`, and for
+/// the opposite reason: a list is read from the front.
+fn trim_tail(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(room.saturating_sub(1)).collect();
+    format!("{head}…")
+}
+
 fn shorten(name: &str, room: usize) -> String {
     let room = room.max(8);
     if name.chars().count() <= room {
