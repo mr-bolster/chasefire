@@ -647,6 +647,21 @@ impl eframe::App for Window {
                                 .strong()
                                 .color(egui::Color32::from_rgb(185, 190, 200)),
                         );
+                        // Sending the clock back out is a thing other machines
+                        // are relying on, and until now the window said nothing
+                        // about it: somebody could have it running, or not
+                        // running, and no way to tell from here.
+                        if let Some(port) = self.runner.mtc_port() {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(words.mtc_badge)
+                                    .size(11.0)
+                                    .monospace()
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(120, 200, 140)),
+                            )
+                            .on_hover_text(words.mtc_sending.replace("{}", port));
+                        }
                         // The short word, not the sentence: it balances against
                         // the source on the left instead of running off the
                         // edge. The full sentence is a hover away, and Pablo is

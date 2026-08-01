@@ -502,6 +502,11 @@ impl Options {
                     }
                     None => {
                         let ready = self.midi_port.is_some();
+                        // A greyed button with nothing beside it is a dead end:
+                        // it does not say what it wants. Say it.
+                        if !ready {
+                            hint(ui, words.mtc_needs_a_port);
+                        }
                         if ui
                             .add_enabled(ready, egui::Button::new(words.mtc_send))
                             .clicked()
