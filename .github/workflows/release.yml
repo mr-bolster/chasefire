@@ -40,6 +40,8 @@ jobs:
             label: windows-x64
           - os: ubuntu-latest
             label: linux-x64
+          - os: macos-latest
+            label: macos-universal
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -49,7 +51,19 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
-      - run: cargo build --release
+      - name: Both architectures (macOS)
+        if: runner.os == 'macOS'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+
+      - name: Build
+        if: runner.os != 'macOS'
+        run: cargo build --release
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -71,18 +85,87 @@ jobs:
           cp -r examples dist/examples
           tar -czf chasefire-linux-x64.tar.gz -C dist .
 
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          app="dist/Chasefire.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+          # One binary for both machines. Everything after this has to happen
+          # in this order: lipo invalidates the signature Rust puts on an
+          # arm64 build, and an unsigned arm64 binary will not launch at all.
+          lipo -create -output "$app/Contents/MacOS/chasefire" \
+            target/x86_64-apple-darwin/release/chasefire \
+            target/aarch64-apple-darwin/release/chasefire
+          lipo -create -output "dist/chasefire-cli" \
+            target/x86_64-apple-darwin/release/chasefire-cli \
+            target/aarch64-apple-darwin/release/chasefire-cli
+
+          # The icon, from the same artwork the window uses.
+          iconset=$(mktemp -d)/icon.iconset
+          mkdir -p "$iconset"
+          for size in 16 32 128 256 512; do
+            sips -z $size $size crates/pablo/assets/logo.png \
+              --out "$iconset/icon_${size}x${size}.png" >/dev/null
+            sips -z $((size * 2)) $((size * 2)) crates/pablo/assets/logo.png \
+              --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/chasefire.icns"
+
+          version="${GITHUB_REF_NAME#v}"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>              <string>Chasefire</string>
+            <key>CFBundleDisplayName</key>       <string>Chasefire</string>
+            <key>CFBundleIdentifier</key>        <string>app.mrbolster.chasefire</string>
+            <key>CFBundleExecutable</key>        <string>chasefire</string>
+            <key>CFBundleIconFile</key>          <string>chasefire.icns</string>
+            <key>CFBundlePackageType</key>       <string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${version}</string>
+            <key>CFBundleVersion</key>           <string>${version}</string>
+            <key>LSMinimumSystemVersion</key>    <string>11.0</string>
+            <key>NSHighResolutionCapable</key>   <true/>
+            <!-- Without this key macOS does not ask for the microphone, and
+                 without the microphone there is no LTC. For this program that
+                 is not packaging, it is the feature. -->
+            <key>NSMicrophoneUsageDescription</key>
+            <string>Chasefire reads SMPTE LTC timecode from an audio input.</string>
+          </dict>
+          </plist>
+          PLIST
+
+          # Ad-hoc: enough to launch, not enough to satisfy Gatekeeper. Since
+          # Sequoia the way past that is System Settings › Privacy & Security ›
+          # Open Anyway, and the release notes say so.
+          codesign --force --deep --sign - "$app"
+          codesign --verify --verbose "$app"
+
+          cp README.md LICENSE LICENSE-MPL-2.0 dist/
+          cp -r examples dist/examples
+          ditto -c -k --keepParent --sequesterRsrc dist chasefire-macos-universal.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: chasefire-${{ matrix.label }}
           path: |
             chasefire-windows-x64.zip
             chasefire-linux-x64.tar.gz
+            chasefire-macos-universal.zip
           if-no-files-found: ignore
 
   publish:
     name: Publish the release
     needs: build
     runs-on: ubuntu-latest
+    # Only a tag is a release. Running this by hand builds and uploads the
+    # artifacts so the packaging can be checked without inventing a version
+    # named after a branch.
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
