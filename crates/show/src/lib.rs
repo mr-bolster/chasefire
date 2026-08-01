@@ -104,11 +104,48 @@ fn flourish_for(steps: &[cue::Step]) -> pablo::Flourish {
     }
 }
 
+/// How an output was made, so it can be made again next time.
+///
+/// The sinks themselves cannot be asked this: a socket knows where it is
+/// pointing but not that it was called "video", and a MIDI connection has no
+/// memory of the name it was opened by. So the recipe is kept beside them —
+/// which is also exactly what has to be written to the settings file for a
+/// show that is rebuilt every night to stop being rebuilt by hand.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Wiring {
+    Osc {
+        name: String,
+        target: String,
+    },
+    Midi {
+        name: String,
+        port: String,
+    },
+    Network {
+        name: String,
+        port: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer: Option<String>,
+    },
+}
+
+impl Wiring {
+    pub fn name(&self) -> &str {
+        match self {
+            Wiring::Osc { name, .. } | Wiring::Midi { name, .. } | Wiring::Network { name, .. } => {
+                name
+            }
+        }
+    }
+}
+
 pub struct Runner {
     capture: Option<audio::Capture>,
     chaser: Chaser,
     engine: Engine,
     outputs: Outputs,
+    /// How each output was made, in the order it was made.
+    wiring: Vec<Wiring>,
     /// Set when timecode is arriving from somewhere other than the sound card.
     external_source: Option<Source>,
     /// Sending the timecode we are chasing back out as MIDI Time Code, when
@@ -143,6 +180,7 @@ impl Runner {
             chaser: Chaser::new(nominal_fps),
             engine: Engine::new(nominal_fps),
             outputs: Outputs::new(),
+            wiring: Vec::new(),
             external_source: None,
             mtc: None,
             default_osc: None,
@@ -225,12 +263,14 @@ impl Runner {
     /// Point a **named** OSC output at a machine, so cues can address it.
     pub fn connect_osc_as(&mut self, name: &str, target: &str) -> Result<(), String> {
         let sink = OscSink::connect(target).map_err(|error| error.to_string())?;
-        let described = sink.target().to_string();
         self.outputs.put(name, Box::new(sink));
+        self.note_wiring(Wiring::Osc {
+            name: name.to_string(),
+            target: target.to_string(),
+        });
         if self.default_osc.is_none() {
             self.default_osc = Some(name.to_string());
         }
-        let _ = described;
         Ok(())
     }
 
@@ -243,6 +283,10 @@ impl Runner {
     pub fn connect_midi_as(&mut self, name: &str, port: &str) -> Result<(), String> {
         let sink = MidiSink::open(port)?;
         self.outputs.put(name, Box::new(sink));
+        self.note_wiring(Wiring::Midi {
+            name: name.to_string(),
+            port: port.to_string(),
+        });
         Ok(())
     }
 
@@ -266,6 +310,11 @@ impl Runner {
         };
         let sink = NetworkMidiSink::start(name, port, peer)?;
         self.outputs.put(name, Box::new(sink));
+        self.note_wiring(Wiring::Network {
+            name: name.to_string(),
+            port,
+            peer: peer.map(|at| at.to_string()),
+        });
         Ok(())
     }
 
@@ -287,11 +336,45 @@ impl Runner {
         self.mtc.as_ref().map(|clock| clock.port())
     }
 
+    fn note_wiring(&mut self, wiring: Wiring) {
+        self.wiring
+            .retain(|existing| existing.name() != wiring.name());
+        self.wiring.push(wiring);
+    }
+
     pub fn disconnect_output(&mut self, name: &str) -> bool {
         if self.default_osc.as_deref() == Some(name) {
             self.default_osc = None;
         }
+        self.wiring.retain(|existing| existing.name() != name);
         self.outputs.remove(name)
+    }
+
+    /// How everything is wired, for writing down.
+    pub fn wiring(&self) -> &[Wiring] {
+        &self.wiring
+    }
+
+    /// Wire it all up again from what was written down.
+    ///
+    /// Returns what could not be reconnected, by name and reason — never an
+    /// error for the whole thing. A MIDI port that is not in the building
+    /// tonight must not stop the other three outputs coming back.
+    pub fn restore_wiring(&mut self, wiring: &[Wiring]) -> Vec<String> {
+        let mut trouble = Vec::new();
+        for one in wiring {
+            let outcome = match one {
+                Wiring::Osc { name, target } => self.connect_osc_as(name, target),
+                Wiring::Midi { name, port } => self.connect_midi_as(name, port),
+                Wiring::Network { name, port, peer } => {
+                    self.connect_network_midi_as(name, *port, peer.as_deref())
+                }
+            };
+            if let Err(why) = outcome {
+                trouble.push(format!("{}: {why}", one.name()));
+            }
+        }
+        trouble
     }
 
     /// The names of everywhere cues can be sent.

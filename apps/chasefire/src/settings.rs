@@ -26,7 +26,14 @@ pub struct Settings {
     pub channel: usize,
     /// `None` means work the frame rate out from the signal.
     pub frame_rate: Option<f64>,
+    /// Where the unnamed OSC output points. Kept for settings files written
+    /// before outputs had names; `outputs` is the one that matters now.
     pub osc_target: Option<String>,
+    /// Every output, by name, and how to make it again. A show that is built
+    /// once and repeated fourteen nights should be built once.
+    pub outputs: Vec<show::Wiring>,
+    /// The port MTC goes out of, when it does.
+    pub mtc_port: Option<String>,
     pub cue_file: Option<String>,
     pub offset_frames: i32,
     pub freewheel_frames: u32,
@@ -46,6 +53,8 @@ impl Default for Settings {
             channel: 1,
             frame_rate: None,
             osc_target: None,
+            outputs: Vec::new(),
+            mtc_port: None,
             cue_file: None,
             offset_frames: 0,
             freewheel_frames: 8,
@@ -143,6 +152,49 @@ mod tests {
         assert_eq!(settings.channel, 3);
         assert_eq!(settings.osc_target.as_deref(), Some("10.0.0.5:7000"));
         assert_eq!(settings.freewheel_frames, 8, "missing fields take defaults");
+    }
+
+    #[test]
+    fn the_outputs_come_back_exactly_as_they_went_in() {
+        // A show built once and repeated fourteen nights should be built once.
+        // What is written here is a recipe, not a description: it has to be
+        // enough to make the same output again tomorrow.
+        let settings = Settings {
+            outputs: vec![
+                show::Wiring::Osc {
+                    name: "video".into(),
+                    target: "10.0.0.5:7000".into(),
+                },
+                show::Wiring::Midi {
+                    name: "mesa".into(),
+                    port: "ART USB".into(),
+                },
+                show::Wiring::Network {
+                    name: "red".into(),
+                    port: 5004,
+                    peer: Some("10.0.0.9:5004".into()),
+                },
+            ],
+            mtc_port: Some("Midi Through".into()),
+            ..Default::default()
+        };
+
+        let back: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).expect("should load");
+        assert_eq!(back.outputs, settings.outputs);
+        assert_eq!(back.mtc_port.as_deref(), Some("Midi Through"));
+    }
+
+    #[test]
+    fn a_settings_file_from_before_outputs_had_names_still_opens() {
+        // The version people are running today writes osc_target and no
+        // outputs at all. It has to keep opening, and it has to not come back
+        // with an empty list pretending that is what somebody chose.
+        let old = r#"{"channel": 2, "osc_target": "10.0.0.5:7000", "pablo": false}"#;
+        let settings: Settings = serde_json::from_str(old).expect("should load");
+        assert_eq!(settings.osc_target.as_deref(), Some("10.0.0.5:7000"));
+        assert!(settings.outputs.is_empty());
+        assert!(settings.mtc_port.is_none(), "nothing was ever switched on");
     }
 
     #[test]

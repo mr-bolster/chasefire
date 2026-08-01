@@ -2513,6 +2513,7 @@ dependencies = [
  "ltc",
  "pablo",
  "rtpmidi",
+ "serde",
  "serde_json",
  "sink",
 ]

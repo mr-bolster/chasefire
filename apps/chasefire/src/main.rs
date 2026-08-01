@@ -385,6 +385,15 @@ impl Window {
             }
         }
 
+        // Everything that was wired last time, wired again. Each failure is
+        // named and the rest still come up: a MIDI port that is not in the
+        // building tonight must not take the video server down with it.
+        for trouble in runner.restore_wiring(&settings.outputs) {
+            notes.push(trouble);
+        }
+
+        // The command line wins over what was remembered, because somebody who
+        // typed an address meant that address.
         if let Some(target) = &osc {
             match runner.connect_osc(target) {
                 // The left-hand strip already shows where it goes, so
@@ -404,9 +413,11 @@ impl Window {
             Err(error) => notes.push(startup_words.audio_error(&error)),
         }
 
-        if let Some(port) = &startup.mtc {
-            match runner.start_mtc(port) {
-                Ok(()) => notes.push(startup_words.mtc_sending.replace("{}", port)),
+        // The clock too: it was switched on deliberately last time, and a
+        // machine that boots into converting should boot into converting.
+        if let Some(port) = startup.mtc.clone().or_else(|| settings.mtc_port.clone()) {
+            match runner.start_mtc(&port) {
+                Ok(()) => notes.push(startup_words.mtc_sending.replace("{}", &port)),
                 Err(error) => notes.push(error),
             }
         }
@@ -467,6 +478,8 @@ impl Window {
                 .runner
                 .output_target()
                 .or_else(|| self.settings.osc_target.clone()),
+            outputs: self.runner.wiring().to_vec(),
+            mtc_port: self.runner.mtc_port().map(str::to_string),
             cue_file: self.settings.cue_file.clone(),
             offset_frames: self.runner.offset_frames(),
             freewheel_frames: self.runner.freewheel_frames(),
@@ -885,7 +898,7 @@ impl eframe::App for Window {
                     ui.label(line(
                         words.out_label,
                         match self.runner.output_target() {
-                            Some(target) => format!("OSC {target}"),
+                            Some(target) => shorten(&target, LINE),
                             None => "—".to_string(),
                         },
                     ));
