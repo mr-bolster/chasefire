@@ -2,9 +2,10 @@
 
 Chase timecode, fire cues.
 
-Chasefire reads **SMPTE LTC** from a sound card, watches for the timecode values
-you have programmed, and fires **OSC, MIDI, MIDI Show Control and RTP-MIDI** at
-exactly those moments. Mixer snapshots, lighting cues and video clips land on
+Chasefire chases timecode — **SMPTE LTC** from a sound card, or **MTC** from a
+MIDI port with no sound card at all — watches for the values you have
+programmed, and fires **OSC, MIDI, MIDI Show Control and RTP-MIDI** at exactly
+those moments. Mixer snapshots, lighting cues and video clips land on
 the frame, every night, without an operator holding their breath over a GO
 button.
 
@@ -18,8 +19,8 @@ expires halfway through a tour, no phoning home.
 > **Status: it works, and it is not finished.** Live capture, frame-rate
 > detection, the cue engine, OSC, MIDI, MSC, RTP-MIDI and MTC output have all
 > been proved against real hardware — a real preamp, a real MIDI port and
-> sockets that answer. Still to come: MTC **in**, and a control input so a
-> surface can arm the show.
+> sockets that answer. Still to come: a control input so a surface can arm the
+> show, and Art-Net timecode.
 
 ## What it looks like
 

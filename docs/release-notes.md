@@ -1,9 +1,10 @@
 **Chase timecode, fire cues.**
 
-Chasefire reads SMPTE LTC off a sound card and, at the timecode values you
-programme, fires OSC, MIDI, MIDI Show Control and RTP-MIDI. It can also send
-the clock back out as MTC, which turns the same machine into the converter a
-rig with LTC on a cable and an MTC-only device has been missing.
+Chasefire chases timecode — **SMPTE LTC** off a sound card or **MTC** off a
+MIDI port — and at the values you programme it fires OSC, MIDI, MIDI Show
+Control and RTP-MIDI. It can also send the clock back out as MTC, which turns
+the same machine into the converter a rig with LTC on a cable and an MTC-only
+device has been missing.
 
 It runs on the machine you already own. No kernel drivers, no licence that
 expires halfway through a tour, no phoning home.
@@ -76,6 +77,6 @@ Options. Once, never a subscription.
 
 ## Not built yet
 
-MTC **in**, a control input so a surface can arm the show, and Art-Net
-timecode. Issues and stories from real gigs are more useful than pull requests
-— see the README for why.
+A control input so a surface can arm the show, and Art-Net timecode. Issues and
+stories from real gigs are more useful than pull requests — see the README for
+why.

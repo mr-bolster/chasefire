@@ -237,6 +237,9 @@ struct Window {
     pablo: pablo_view::PabloView,
     presentation: Presentation,
     always_on_top: bool,
+    /// What the window level actually is, as opposed to what the pin says it
+    /// should be. The two differ while the settings window is open.
+    level_now: egui::WindowLevel,
     /// Where to write a picture of the window, and when.
     screenshot: Option<(String, f32)>,
     /// The last couple of things that happened. Two lines is deliberate: it
@@ -437,6 +440,12 @@ impl Window {
                 Presentation::Plain
             },
             always_on_top: settings.always_on_top,
+            // What the window was *built* as, not what the settings want.
+            // The viewport is always created pinned, so if the settings say
+            // otherwise the first frame has to say so — and before this,
+            // nothing ever did: the pin came back on every launch no matter
+            // what the button had been left saying.
+            level_now: egui::WindowLevel::AlwaysOnTop,
             // A few frames of grace so the layout has settled before the shot.
             screenshot,
             log: notes.into_iter().rev().take(2).collect(),
@@ -819,13 +828,6 @@ impl eframe::App for Window {
                 .clicked()
             {
                 self.always_on_top = !self.always_on_top;
-                let level = if self.always_on_top {
-                    egui::WindowLevel::AlwaysOnTop
-                } else {
-                    egui::WindowLevel::Normal
-                };
-                ui.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
             }
         });
 
@@ -938,6 +940,21 @@ impl eframe::App for Window {
             &mut self.presentation,
             &mut self.settings.language,
         );
+
+        // While the settings window is open the corner one steps out of the
+        // way. Pinned above everything it sits exactly on top of the input
+        // section, and somebody who has opened the settings is at the machine
+        // configuring it, not watching a corner. The pin itself is untouched:
+        // it comes back the moment the settings close.
+        let wanted = if self.options.open || !self.always_on_top {
+            egui::WindowLevel::Normal
+        } else {
+            egui::WindowLevel::AlwaysOnTop
+        };
+        if wanted != self.level_now {
+            self.level_now = wanted;
+            context.send_viewport_cmd(egui::ViewportCommand::WindowLevel(wanted));
+        }
 
         // The reminder waits for the window to settle, and stands down for good
         // the moment a show is running. `busy` is the whole safety rule.
