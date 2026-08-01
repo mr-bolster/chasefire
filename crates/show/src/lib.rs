@@ -15,8 +15,8 @@
 use chase::{Chaser, Signal};
 use cue::{Cue, Engine, Firing};
 use ltc::Timecode;
-use sink::{MidiSink, MtcClock, NetworkMidiSink, OscSink, Outputs};
-use std::time::Instant;
+use sink::{MidiSink, MtcClock, MtcInput, NetworkMidiSink, OscSink, Outputs};
+use std::time::{Duration, Instant};
 
 /// Whether the input is actually delivering anything.
 ///
@@ -151,6 +151,9 @@ pub struct Runner {
     /// Sending the timecode we are chasing back out as MIDI Time Code, when
     /// somebody asked for that. It keeps its own clock on its own thread.
     mtc: Option<MtcClock>,
+    /// Chasing MTC instead of LTC: a DAW on this machine, or a Mac over the
+    /// network. No sound card and no cable involved.
+    mtc_in: Option<MtcInput>,
     /// What the single OSC destination is called when nobody has named any.
     /// Cues that name nowhere land here, so a one-machine show never has to
     /// learn that outputs have names at all.
@@ -183,6 +186,7 @@ impl Runner {
             wiring: Vec::new(),
             external_source: None,
             mtc: None,
+            mtc_in: None,
             default_osc: None,
             pinned_fps: None,
             settled: false,
@@ -325,6 +329,37 @@ impl Runner {
     pub fn start_mtc(&mut self, port: &str) -> Result<(), String> {
         self.mtc = Some(MtcClock::start(port)?);
         Ok(())
+    }
+
+    /// Everything this machine can listen to for MTC.
+    pub fn mtc_input_ports() -> Vec<String> {
+        MtcInput::ports().unwrap_or_default()
+    }
+
+    /// Chase MTC from a MIDI port instead of LTC from a sound card.
+    ///
+    /// The two are mutually exclusive on purpose: chasing two clocks at once
+    /// is not a feature, it is a way to have the show in two places.
+    pub fn open_mtc_input(&mut self, port: &str) -> Result<(), String> {
+        let input = MtcInput::open(port)?;
+        self.close_input();
+        self.external_source = Some(Source::Mtc);
+        self.settled = false;
+        self.mtc_in = Some(input);
+        Ok(())
+    }
+
+    pub fn close_mtc_input(&mut self) {
+        self.mtc_in = None;
+        if self.capture.is_none() {
+            self.external_source = None;
+            self.current = None;
+        }
+    }
+
+    /// Which MIDI port MTC is arriving on, if it is.
+    pub fn mtc_input_port(&self) -> Option<&str> {
+        self.mtc_in.as_ref().map(|input| input.port())
     }
 
     pub fn stop_mtc(&mut self) {
@@ -553,6 +588,46 @@ impl Runner {
     /// Do a slice of work. Call it as often as you like; it never blocks.
     pub fn poll(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
+
+        // MTC first, and on its own: chasing two clocks at once is not a
+        // feature. A position every two frames is all this source gives; the
+        // engine only needs to be told where the show is, and it is the same
+        // engine either way.
+        if let Some(input) = &self.mtc_in {
+            let mut settled_rate = None;
+            for position in input.drain() {
+                if !self.settled {
+                    let nominal = position.rate.fps().ceil() as u8;
+                    self.engine.set_nominal_fps(nominal);
+                    self.chaser.set_nominal_fps(nominal);
+                    self.settled = true;
+                    settled_rate = Some((position.rate.fps(), nominal));
+                }
+                self.current = Some(position.at);
+                self.last_frame_at = Some(Instant::now());
+                self.tell_the_mtc_clock(position.at);
+                let fired = self.engine.update(position.at, false);
+                self.deliver(fired, &mut events);
+            }
+            if let Some((fps, nominal)) = settled_rate {
+                events.push(Event::Locked { fps, nominal });
+            }
+
+            // Nothing for a while means the far end stopped or went away.
+            // Silence is how MTC says "stopped" — there is no separate word
+            // for it, so the timeout is the whole of the detection.
+            if let Some(last) = self.last_frame_at {
+                if last.elapsed() > Duration::from_millis(500) && self.current.is_some() {
+                    events.push(Event::SignalLost);
+                    if let Some(clock) = &self.mtc {
+                        clock.lost();
+                    }
+                    self.engine.signal_lost();
+                    self.current = None;
+                }
+            }
+            return events;
+        }
 
         // Drain the audio thread's queue first and let go of the capture, so
         // the rest of this can touch the engine. The frames are small and

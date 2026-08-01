@@ -11,11 +11,14 @@
 //! to fire — that argument was settled in the `cue` crate — they only send.
 
 pub mod midi;
+pub mod midi_input;
 pub mod mtc;
 pub mod mtc_clock;
+pub mod mtc_in;
 pub mod network;
 
 pub use midi::MidiSink;
+pub use midi_input::{MtcInput, Position};
 pub use mtc_clock::MtcClock;
 pub use network::NetworkMidiSink;
 

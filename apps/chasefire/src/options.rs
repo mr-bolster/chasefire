@@ -94,6 +94,11 @@ pub struct Options {
     osc_target: String,
     /// What the next output added will be called. Cues address outputs by name.
     osc_name: String,
+    /// Which source the input section is showing.
+    source_tab: TimecodeFrom,
+    mtc_in_ports: Vec<String>,
+    mtc_ports_listed: bool,
+    mtc_in_port: Option<String>,
     /// What a new RTP-MIDI session will be called, listen on, and invite.
     rtp_name: String,
     rtp_port: u16,
@@ -144,6 +149,15 @@ impl Carrier {
             Carrier::Network => words.tab_network,
         }
     }
+}
+
+/// Where the timecode comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimecodeFrom {
+    /// Audio, off a sound card.
+    Ltc,
+    /// MIDI Time Code, off a MIDI port. No sound card involved.
+    Mtc,
 }
 
 /// What the cue list is showing.
@@ -200,6 +214,10 @@ impl Options {
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
             osc_name: String::new(),
+            source_tab: TimecodeFrom::Ltc,
+            mtc_in_ports: Vec::new(),
+            mtc_ports_listed: false,
+            mtc_in_port: None,
             rtp_name: String::new(),
             // The port everything in this trade defaults to.
             rtp_port: 5004,
@@ -313,6 +331,30 @@ impl Options {
         words: &'static crate::text::Text,
     ) {
         section(ui, words.section_input);
+
+        // Where the timecode comes from. Two sources, and only one at a time:
+        // chasing two clocks at once is not a feature, it is a way to have the
+        // show in two places.
+        ui.horizontal(|ui| {
+            let was = self.source_tab;
+            ui.selectable_value(&mut self.source_tab, TimecodeFrom::Ltc, "LTC");
+            ui.selectable_value(&mut self.source_tab, TimecodeFrom::Mtc, "MTC");
+            if was != self.source_tab {
+                // Switching closes the other one, so nothing is left half open
+                // and quietly holding a port.
+                match self.source_tab {
+                    TimecodeFrom::Ltc => runner.close_mtc_input(),
+                    TimecodeFrom::Mtc => runner.close_input(),
+                }
+            }
+        });
+        ui.add_space(6.0);
+
+        if self.source_tab == TimecodeFrom::Mtc {
+            self.mtc_input(ui, runner, words);
+            return;
+        }
+
         grid(ui, "input", |ui| {
             label(ui, words.device);
             let current = self
@@ -387,6 +429,71 @@ impl Options {
             });
             ui.end_row();
         });
+    }
+
+    /// Chasing MTC off a MIDI port instead of LTC off a sound card.
+    ///
+    /// The whole point: a DAW on this machine, or a Mac across the network,
+    /// with no audio interface and no cable.
+    fn mtc_input(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        if !self.mtc_ports_listed {
+            self.mtc_ports_listed = true;
+            self.mtc_in_ports = Runner::mtc_input_ports();
+        }
+
+        grid(ui, "mtc-in", |ui| {
+            label(ui, words.mtc_from);
+            ui.horizontal(|ui| {
+                let chosen = self
+                    .mtc_in_port
+                    .clone()
+                    .unwrap_or_else(|| words.no_midi_ports.to_string());
+                egui::ComboBox::from_id_salt("mtc-in-port")
+                    .selected_text(shorten(&chosen, 34))
+                    .width(FIELD)
+                    .show_ui(ui, |ui| {
+                        for port in &self.mtc_in_ports {
+                            ui.selectable_value(&mut self.mtc_in_port, Some(port.clone()), port);
+                        }
+                    });
+                if ui.button(words.rescan).clicked() {
+                    self.mtc_in_ports = Runner::mtc_input_ports();
+                }
+            });
+            ui.end_row();
+
+            label(ui, "");
+            ui.horizontal(|ui| match runner.mtc_input_port() {
+                Some(port) => {
+                    ui.label(egui::RichText::new(shorten(port, 34)).size(11.0));
+                    if ui.button(words.stop).clicked() {
+                        runner.close_mtc_input();
+                        self.message = Some(words.input_closed.into());
+                    }
+                }
+                None => {
+                    let ready = self.mtc_in_port.is_some();
+                    if ui
+                        .add_enabled(ready, egui::Button::new(words.apply_and_listen))
+                        .clicked()
+                    {
+                        let port = self.mtc_in_port.clone().unwrap_or_default();
+                        match runner.open_mtc_input(&port) {
+                            Ok(()) => self.message = Some(words.listening.into()),
+                            Err(error) => self.message = Some(error),
+                        }
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        ui.add_space(2.0);
+        hint(ui, words.mtc_in_note);
     }
 
     fn outputs_section(
