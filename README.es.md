@@ -103,7 +103,7 @@ momento posible.
 ## Las reglas que importan
 
 Comparar dos números lo hace cualquiera. Lo que separa una herramienta en la que
-un técnico confía de una que apaga tras el primer bolo son los casos límite, así
+un técnico confía de una que apaga tras el primer bolo son los edge cases, así
 que están escritos como tests en vez de descubiertos en el escenario.
 
 - Una cue dispara cuando el timecode la **cruza**, no cuando coincide exacto —
@@ -119,7 +119,7 @@ que están escritos como tests en vez de descubiertos en el escenario.
   que un segundo frame confirme cualquier salto**. Si no, un frame malo dispara
   una cue antes de tiempo y otra vez en su momento: un fallo, dos disparos, y
   nada en la lista de cues que lo explique después.
-- Cuando cae la señal, **vuela en ciego** ocho frames antes de darse por
+- Cuando cae la señal hace **freewheel** ocho frames antes de darse por
   vencido — la norma del gremio son de ocho a cuarenta.
 
 Cada una de ellas es un test, y varias se escribieron después de que el código
@@ -132,20 +132,20 @@ conversor de entrada:
 
 - Decodifica limpio desde **−53 dBFS de pico hasta saturar del todo**. Saturar
   no hace ningún daño: el bifase ya es prácticamente una onda cuadrada.
-- **Subir el previo no compra nada.** Señal y ruido suben juntos; la relación
-  señal-ruido se mantuvo dentro de 1 dB en ocho posiciones de ganancia. Con LTC
+- **Subir el previo no compra nada.** Señal y ruido suben juntos; la SNR se
+  mantuvo dentro de 1 dB en ocho posiciones de ganancia. Con LTC
   quieres una señal limpia, no una señal fuerte.
 - Los frames corruptos empiezan a aparecer por debajo de unos **12 dB de
-  señal-ruido**. Por encima de 16 dB, ninguno. Ese umbral es al que está
+  SNR**. Por encima de 16 dB, ninguno. Ese umbral es al que está
   calibrado el medidor de nivel.
 - Diciéndole el frame rate, engancha **al primer frame** — el suelo, porque un
-  frame son 80 bits y la palabra de sincronismo son los últimos 16.
+  frame son 80 bits y la sync word son los últimos 16.
   Averiguándolo él solo, tres frames.
 
 ## Cómo está repartido
 
 ```
-crates/ltc      Decodificador y codificador de SMPTE LTC. DSP puro, sin E/S.
+crates/ltc      Decodificador y codificador de SMPTE LTC. DSP puro, sin I/O.
 crates/chase    Decide de qué frames decodificados fiarse.
 crates/cue      La tabla de cues y las reglas de disparo. Sin sockets.
 crates/audio    Captura y generación en vivo, decodificando en el callback.
@@ -155,7 +155,7 @@ crates/pablo    El guitarrista pequeño, y la regla de que no puede mentir.
 crates/show     Todo lo anterior, cableado en un solo sitio.
 apps/chasefire       La ventana.
 apps/chasefire-cli   Línea de comandos, simulador y herramientas de medida.
-tools/               Montar la hoja de sprites a partir de las tiras.
+tools/               Montar la sprite sheet a partir de las tiras.
 ```
 
 ## Compilar
@@ -173,7 +173,7 @@ Dos, a propósito, y la línea entre ellas no es arbitraria.
 
 **El motor es MPL-2.0** — `ltc`, `cue`, `chase`, `audio`, `sink`, `rtpmidi`,
 `show`. Eso es el decodificador, las reglas de disparo, el chaser y las salidas:
-las partes donde viven los casos límite y donde acertar importa. La MPL es
+las partes donde viven los edge cases y donde acertar importa. La MPL es
 copyleft a nivel de fichero, así que las mejoras a esos ficheros siguen abiertas
 y las puede usar cualquier cosa, incluido software que no sea abierto en
 absoluto.
