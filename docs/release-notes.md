@@ -72,8 +72,10 @@ The **engine** — decoder, firing rules, chaser, outputs — is **MPL-2.0**.
 Improvements to those files stay open and can be used by anything. The
 **program** is **GPL-3.0-or-later**.
 
-Free, and it stays free. If it earns you money, there is a Donate button in
-Options. Once, never a subscription.
+Nothing here costs money: not the program, not these builds, not an update.
+No licence key, no trial, no expiry. It runs on the honour system — if it earns
+you money there is a Donate button in Options, and that is the whole
+arrangement.
 
 ## Not built yet
 

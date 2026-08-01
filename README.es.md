@@ -4,161 +4,83 @@
 
 Persigue timecode, dispara cues.
 
-Chasefire persigue timecode — **SMPTE LTC** por tarjeta de sonido, o **MTC** por
-un puerto MIDI sin tarjeta de sonido ninguna —, vigila los valores que le hayas
-programado y dispara **OSC, MIDI, MIDI Show Control y RTP-MIDI** justo en esos
-momentos. Snapshots de mesa, cues de luces y clips de vídeo caen en el frame,
-todas las noches, sin nadie conteniendo la respiración sobre un botón de GO.
+Chasefire sigue timecode — **SMPTE LTC** por tarjeta de sonido, o **MTC** por un
+puerto MIDI sin tarjeta ninguna — y en los momentos que le programes dispara
+**OSC, MIDI, MIDI Show Control** y **RTP-MIDI**. Snapshots de mesa, cues de
+luces y clips de vídeo caen en el frame, todas las noches, sin nadie
+conteniendo la respiración sobre un botón de GO.
 
-También puede mandar el reloj de vuelta hacia fuera como **MIDI Time Code**, con
-lo que la misma máquina se convierte en el conversor que le falta a un aparejo
-con LTC por cable y un aparato que sólo entiende MTC.
+También puede mandar el reloj de vuelta hacia fuera como **MTC**, con lo que la
+misma máquina es el conversor entre un aparejo con LTC por cable y un aparato
+que sólo entiende MTC.
 
-Corre en la máquina que ya tienes: sin drivers de kernel, sin licencia que
-caduque a mitad de gira, sin llamar a casa.
+## El hueco que tapa
 
-> **Estado: funciona, y no está terminado.** Captura en vivo, detección de
-> frame rate, el motor de cues, OSC, MIDI, MSC, RTP-MIDI y salida de MTC están
-> todos probados contra hardware real — un previo de verdad, un puerto MIDI de
-> verdad y sockets que contestan. Queda: una entrada de control para que una
-> superficie pueda armar el show, y timecode por Art-Net.
+Software que *convierte* timecode hay de sobra, y show controllers que
+reproducen media también. De lo que no hay producto es de la caja de en medio:
+**algo que siga timecode y dispare a todo lo demás, sin pretender ser un
+servidor de media.**
 
-## Qué se ve
+Hoy ese trabajo se hace encadenando dos aplicaciones —un conversor y una
+superficie de control— o montándotelo tú con un toolkit. Cada eslabón de más es
+otra cosa que arrancar, otro reloj, y otro sitio por donde se cae el show.
 
-Una ventanita que dejas en una esquina. Cuatro cosas: si el show está armado,
-la puerta a los ajustes, el timecode y Pablo.
-
-Pablo es el guitarrista pequeño, y no es decoración. A las tres de la mañana en
-una sala a oscuras nadie lee la palabra «enganchado», pero cualquiera nota de
-reojo si el muñeco está tocando o dormido. Es un indicador de estado para la
-visión periférica, que es el único tipo de atención que le sobra a un técnico.
-
-| Pablo | Qué está pasando de verdad |
+| | |
 |---|---|
-| Dormido, pompa de mocos, zzz | No llega timecode |
-| Despierto pero en pijama y gorro | Timecode corriendo, **desarmado — no va a disparar nada** |
-| Tocando, siguiendo el ritmo | Enganchado y armado |
-| Tocando pero tiritando | Funciona, pero la señal está cerca del suelo |
-| Tocando a trompicones, `?` encima | Señal perdida, contando por nuestra cuenta |
+| Conversores gratuitos (TXL20 y compañía) | convierten timecode; no disparan cues |
+| TimeLord | reproduce media y genera timecode |
+| Show Cue System | un show controller completo para Windows |
+| QLab | el que todo el mundo quiere — sólo macOS |
+| Chataigne | un toolkit: capaz de todo, y te lo montas tú |
+| **Chasefire** | sigue timecode, dispara a todo, y no hace nada más |
 
-No puede mentir: hay un test que recorre todas las combinaciones de armado,
-enganchado, freewheel y nivel de señal, y falla si la cara que pone alguna vez
-contradice si una cue iba a salir de verdad.
+## Con qué habla
 
-No a todo el mundo le apetece un dibujo animado en la pantalla en el trabajo, así
-que `--sober` lo cambia por los símbolos de transporte que el gremio ya lee sin
-pensar —stop, pausa, play—, animados por los mismos cinco estados. La misma
-información, las mismas reglas, sin muñeco. El símbolo en reposo es además el
-icono de la aplicación.
+Eliges un preset y te escribe una cue que funciona, sacada de la documentación
+de cada fabricante:
 
-Y cuando dispara una cue la ventana entera destella: verde si salió, **rojo si
-no**, más largo y más fuerte, porque una cue que falló es lo único aquí por lo
-que merece la pena interrumpir a alguien.
+**Resolume · QLab · grandMA3 · grandMA2 (por MSC) · ChamSys MagicQ ·
+Behringer X32/M32 · Behringer Wing · Waves SuperRack**
 
-## Ponerlo en marcha
+Una cue es una **lista de mensajes, cada uno con su destino**, porque un momento
+del show no es un cable: la cue que arranca el vídeo también cambia un snapshot
+en la mesa. QLab no quiere argumento ninguno, grandMA3 quiere una línea de
+comandos entera como string, y una Behringer Wing necesita dos mensajes en el
+orden correcto. Todo eso se puede escribir.
 
-```bash
-cargo build --release
+## Qué tiene
 
-# Ver qué puede escuchar esta máquina
-./target/release/chasefire-cli devices
+- **Entrada:** LTC por tarjeta de sonido a 44,1 / 48 / 96 kHz, o MTC por puerto
+  MIDI. 24, 25, 30, 50 y 60 fps, drop frame incluido.
+- **Salida:** OSC, MIDI, MSC, RTP-MIDI — varios destinos a la vez, cada uno con
+  un nombre al que una cue puede apuntar.
+- **Reloj de salida:** MTC, con el ritmo correcto, para que un receptor pueda
+  engancharse.
+- **Offset** en frames, para compensar el retardo de la tarjeta, la red y el
+  otro extremo. **Freewheel** lo que le digas.
+- Una ventanita para dejar en una esquina, en **español o inglés**.
+- Las listas de cues son ficheros JSON normales: se leen, se comparan y se
+  mandan por correo.
 
-# La ventana, leyendo una tarjeta de sonido y disparando a un servidor de vídeo
-./target/release/chasefire \
-    --device "hw:CARD=CODEC,DEV=0" --channel 1 \
-    --cues examples/resolume-columns.cues.json \
-    --osc 192.168.1.50:7000
-```
+## Descargarlo
 
-Se arma con el botón y sólo con el botón. No hay atajo de teclado a propósito:
-la ventana está por encima de todo lo demás, así que puede robar el foco sin que
-nadie se dé cuenta, y una tecla suelta que desarme el show en silencio es peor
-problema que tener que apuntar a un botón.
+**[Descargas](https://github.com/mr-bolster/chasefire/releases)** — Windows y
+Linux, nada que instalar.
 
-## Dos idiomas
+Windows va a avisar de que el editor es desconocido: estos binarios todavía no
+están firmados. *Más información* → *Ejecutar de todas formas*.
 
-Inglés y español, se elige en Ajustes y se recuerda. No es una tabla de claves:
-cada frase es un campo de una estructura que los dos idiomas tienen que
-rellenar, así que una traducción que falte es un **error de compilación** y no
-un hueco que alguien se encuentra en un escenario. Los errores de la propia
-tarjeta también van traducidos, que son las palabras que se leen en el peor
-momento posible.
+## Apoyarlo
 
-## Probarlo sin hardware ninguno
+**Aquí no se paga nada.** Ni el programa, ni los binarios, ni una
+actualización, ni el año que viene. No hay clave de licencia, ni periodo de
+prueba, ni caducidad, ni nada apagado si no pagas nunca.
 
-```bash
-# Escribir un WAV de LTC limpio
-./target/release/chasefire-cli gen prueba.wav --fps 25 --seconds 25
+Funciona por sistema de honor. Si Chasefire te da de comer, hay un botón de
+**Donar** en Ajustes — paga lo que te parezca que valió, una vez, cuando te
+apetezca. Ése es todo el acuerdo.
 
-# Decodificarlo y disparar las cues
-./target/release/chasefire-cli wav prueba.wav --cues examples/resolume.cues.json
-
-# O correr una lista de cues en tiempo real sin ninguna fuente de timecode
-./target/release/chasefire-cli simulate --cues examples/resolume.cues.json
-
-# Y medir lo que te cuesta tu propia tarjeta, con la salida en bucle a la entrada
-./target/release/chasefire-cli latency --out-device "..." --device "..."
-```
-
-## Las reglas que importan
-
-Comparar dos números lo hace cualquiera. Lo que separa una herramienta en la que
-un técnico confía de una que apaga tras el primer bolo son los edge cases, así
-que están escritos como tests en vez de descubiertos en el escenario.
-
-- Una cue dispara cuando el timecode la **cruza**, no cuando coincide exacto —
-  un frame perdido no puede comerse una cue en silencio.
-- Un **salto grande es un seek, no un cruce.** Arrastra el playhead hasta los
-  bises y las cues de en medio se quedan quietas en vez de dispararse todas.
-- **Rebobinar re-arma**, porque eso es lo que significa «desde arriba».
-  **Nada dispara hacia atrás**, y **arrancar a mitad de show no dispara nada.**
-- Armar a mitad de show no vuelca todo lo que pasó mientras estaba apagado.
-- LTC no tiene checksum, así que un frame corrupto decodifica a una hora
-  equivocada pero verosímil. Los frames se comprueban en BCD, se comprueban
-  contra el bit de paridad cuando la fuente lo mantiene, y **se retienen hasta
-  que un segundo frame confirme cualquier salto**. Si no, un frame malo dispara
-  una cue antes de tiempo y otra vez en su momento: un fallo, dos disparos, y
-  nada en la lista de cues que lo explique después.
-- Cuando cae la señal hace **freewheel** ocho frames antes de darse por
-  vencido — la norma del gremio son de ocho a cuarenta.
-
-Cada una de ellas es un test, y varias se escribieron después de que el código
-demostrara que una suposición cómoda era falsa.
-
-## Medido, no supuesto
-
-Sobre un bucle analógico real — salida de tarjeta, cable, previo de micro,
-conversor de entrada:
-
-- Decodifica limpio desde **−53 dBFS de pico hasta saturar del todo**. Saturar
-  no hace ningún daño: el bifase ya es prácticamente una onda cuadrada.
-- **Subir el previo no compra nada.** Señal y ruido suben juntos; la SNR se
-  mantuvo dentro de 1 dB en ocho posiciones de ganancia. Con LTC
-  quieres una señal limpia, no una señal fuerte.
-- Los frames corruptos empiezan a aparecer por debajo de unos **12 dB de
-  SNR**. Por encima de 16 dB, ninguno. Ese umbral es al que está
-  calibrado el medidor de nivel.
-- Diciéndole el frame rate, engancha **al primer frame** — el suelo, porque un
-  frame son 80 bits y la sync word son los últimos 16.
-  Averiguándolo él solo, tres frames.
-
-## Cómo está repartido
-
-```
-crates/ltc      Decodificador y codificador de SMPTE LTC. DSP puro, sin I/O.
-crates/chase    Decide de qué frames decodificados fiarse.
-crates/cue      La tabla de cues y las reglas de disparo. Sin sockets.
-crates/audio    Captura y generación en vivo, decodificando en el callback.
-crates/sink     Por dónde sale una cue: OSC, MIDI, MSC, RTP-MIDI, MTC.
-crates/rtpmidi  Sesiones RTP-MIDI (AppleMIDI), habladas aquí y no delegadas.
-crates/pablo    El guitarrista pequeño, y la regla de que no puede mentir.
-crates/show     Todo lo anterior, cableado en un solo sitio.
-apps/chasefire       La ventana.
-apps/chasefire-cli   Línea de comandos, simulador y herramientas de medida.
-tools/               Montar la sprite sheet a partir de las tiras.
-```
-
-## Compilar
+## Compilarlo tú
 
 ```bash
 cargo test          # no hace falta hardware
@@ -167,27 +89,19 @@ cargo build --release
 
 En Linux necesitas las cabeceras de ALSA: `sudo apt install libasound2-dev`.
 
+Los edge cases que el motor de cues resuelve bien, y los números medidos sobre
+hardware real en vez de supuestos, están en
+[`docs/how-it-works.md`](docs/how-it-works.md).
+
 ## Licencia
 
-Dos, a propósito, y la línea entre ellas no es arbitraria.
-
 **El motor es MPL-2.0** — `ltc`, `cue`, `chase`, `audio`, `sink`, `rtpmidi`,
-`show`. Eso es el decodificador, las reglas de disparo, el chaser y las salidas:
-las partes donde viven los edge cases y donde acertar importa. La MPL es
-copyleft a nivel de fichero, así que las mejoras a esos ficheros siguen abiertas
-y las puede usar cualquier cosa, incluido software que no sea abierto en
-absoluto.
+`show`: el decodificador, las reglas de disparo, el chaser y las salidas. Las
+mejoras a esos ficheros siguen abiertas y las puede usar cualquier cosa.
 
-**El programa es GPL-3.0-or-later** — todo lo que hay bajo `apps/`, y la crate
-`pablo`, que lleva los dibujos.
-
-Pablo y los símbolos de transporte los dibujó Claude a partir de un guion,
-ejemplos y correcciones de Leo Bolster. Dicho claro aquí porque una pantalla de
-créditos que insinúa que dibujó una persona lo que dibujó una máquina es una
-mentira pequeña, y este proyecto no necesita ninguna.
-
-El código es abierto y lo seguirá siendo. Lo que se paga son los binarios
-firmados y listos para usar — una vez, no todos los años.
+**El programa es GPL-3.0-or-later** — todo lo que hay bajo `apps/`, y `pablo`,
+que lleva los dibujos. Pablo y los símbolos de transporte los dibujó Claude a
+partir de un guion, ejemplos y correcciones de Leo Bolster.
 
 ### Sobre los parches
 

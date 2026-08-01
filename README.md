@@ -4,189 +4,102 @@
 
 Chase timecode, fire cues.
 
-Chasefire chases timecode — **SMPTE LTC** from a sound card, or **MTC** from a
-MIDI port with no sound card at all — watches for the values you have
-programmed, and fires **OSC, MIDI, MIDI Show Control and RTP-MIDI** at exactly
-those moments. Mixer snapshots, lighting cues and video clips land on
-the frame, every night, without an operator holding their breath over a GO
-button.
+Chasefire follows timecode — **SMPTE LTC** off a sound card, or **MTC** off a
+MIDI port with no sound card at all — and at the moments you programme it fires
+**OSC, MIDI, MIDI Show Control** and **RTP-MIDI**. Mixer snapshots, lighting
+cues and video clips land on the frame, every night, without anybody holding
+their breath over a GO button.
 
-It can also send the clock back out as **MIDI Time Code**, which turns the same
-machine into the converter a rig with LTC on a cable and an MTC-only device has
-been missing.
+It can also send the clock back out as **MTC**, so the same machine is the
+converter between a rig with LTC on a cable and a device that only speaks MTC.
 
-It runs on the machine you already own: no kernel drivers, no licence that
-expires halfway through a tour, no phoning home.
+## The gap it fills
 
-> **Status: it works, and it is not finished.** Live capture, frame-rate
-> detection, the cue engine, OSC, MIDI, MSC, RTP-MIDI and MTC output have all
-> been proved against real hardware — a real preamp, a real MIDI port and
-> sockets that answer. Still to come: a control input so a surface can arm the
-> show, and Art-Net timecode.
+There is no shortage of software that *converts* timecode, and no shortage of
+show controllers that play media. What there is no product for is the box in
+between: **something that follows timecode and fires at everything else,
+without pretending to be a media server.**
 
-## What it looks like
+Today that job is done by chaining two applications together — a converter and
+a control surface — or by building it yourself out of a toolkit. Every extra
+link is another thing to boot, another clock, and another place the show can
+fall over.
 
-A small window you leave in a corner. Four things: whether the show is armed, a
-way into the settings, the timecode, and Pablo.
-
-Pablo is the little guitarist, and he is not decoration. At three in the morning
-in a dark venue nobody reads the word "locked", but anyone notices out of the
-corner of an eye whether the little man is playing or fast asleep. He is a status
-display for peripheral vision, which is the only kind of attention an operator
-has spare.
-
-| Pablo | What is actually happening |
+| | |
 |---|---|
-| Asleep, snot bubble, zzz | No timecode arriving |
-| Awake but in pyjamas and a nightcap | Timecode running, **disarmed — nothing will fire** |
-| Playing, nodding along | Locked and armed |
-| Playing but shivering | Working, but the signal is close to the floor |
-| Playing but unsteady, `?` overhead | Signal gone, freewheeling on our own count |
+| Free converters (TXL20 and friends) | convert timecode; they do not fire cues |
+| TimeLord | plays media and generates timecode |
+| Show Cue System | a full show controller for Windows |
+| QLab | the one everybody wants — macOS only |
+| Chataigne | a toolkit: enormously capable, and you build it yourself |
+| **Chasefire** | follows timecode, fires at everything, and does nothing else |
 
-He cannot lie: a test walks every combination of armed, locked, freewheeling and
-signal level, and fails if the face he pulls ever disagrees with whether a cue
-would really go out.
+## What it talks to
 
-Not everyone wants a cartoon on the screen at work, so `--sober` swaps him for
-the transport symbols the trade already reads without thinking — stop, pause,
-play — animated through the same five states. Same information, same rules, no
-cartoon. The resting mark is also the application's icon.
+Pick a preset and it writes a working cue, built from each manufacturer's own
+documentation:
 
-And when a cue fires the whole window flashes: green when it went out, **red
-when it did not**, longer and stronger, because a cue that failed is the one
-thing here worth interrupting somebody for.
+**Resolume · QLab · grandMA3 · grandMA2 (by MSC) · ChamSys MagicQ ·
+Behringer X32/M32 · Behringer Wing · Waves SuperRack**
 
-## Running it
+A cue is a **list of messages, each with its own destination**, because a
+moment in a show is not a wire: the cue that starts the video also changes a
+snapshot on the desk. QLab wants no arguments at all, grandMA3 wants a whole
+command line as a string, and a Behringer Wing needs two messages in the right
+order. All of it can be written down.
 
-```bash
-cargo build --release
+## What it has
 
-# List what this machine can hear
-./target/release/chasefire-cli devices
+- **In:** LTC off a sound card at 44.1 / 48 / 96 kHz, or MTC off a MIDI port.
+  24, 25, 30, 50 and 60 fps, drop frame included.
+- **Out:** OSC, MIDI, MSC, RTP-MIDI — several destinations at once, each with a
+  name a cue can address.
+- **Clock out:** MTC, properly paced, so a receiver can lock to it.
+- **Offset** in frames, to cancel the latency of the card, the network and the
+  far end. **Freewheel** for as long as you tell it.
+- A small window you leave in a corner, in **English or Spanish**.
+- Cue lists are plain JSON files you can read, diff and email.
 
-# The window, reading a sound card and firing at a media server
-./target/release/chasefire \
-    --device "hw:CARD=CODEC,DEV=0" --channel 1 \
-    --cues examples/resolume-columns.cues.json \
-    --osc 192.168.1.50:7000
-```
+## Get it
 
-Arming is done with the button and only with the button. There is deliberately
-no keyboard shortcut: the window sits above everything else, so it can take
-focus without anyone noticing, and a stray keypress that silently disarms a
-running show is a worse problem than having to aim at a button.
+**[Downloads](https://github.com/mr-bolster/chasefire/releases)** — Windows and
+Linux, nothing to install.
 
-## Two languages
+Windows will warn you that the publisher is unknown: these builds are not
+code-signed yet. *More info* → *Run anyway*.
 
-English and Spanish, chosen in Options and remembered. Not a lookup table: every
-string is a field of one struct that both languages have to fill in, so a missing
-translation is a **compile error** rather than a stray key somebody finds on a
-stage. The card's own complaints are translated too, since those are the words
-read at the worst possible moment.
+## Support it
 
-The Spanish is the Spanish this trade actually speaks. Nobody says *código de
-tiempo lineal*; they say LTC.
+**Nothing here costs money.** Not the program, not the builds, not an update,
+not next year. There is no licence key, no trial, no expiry, and nothing
+switched off if you never pay a penny.
 
-## Trying it with no hardware at all
+It runs on the honour system. If Chasefire earns you money there is a
+**Donate** button in Options — pay what you think it was worth, once, whenever
+you like. That is the whole arrangement.
 
-```bash
-# Write a WAV of clean LTC
-./target/release/chasefire-cli gen test.wav --fps 25 --seconds 25
-
-# Decode it and fire the cues
-./target/release/chasefire-cli wav test.wav --cues examples/resolume.cues.json
-
-# Or run a cue list in real time with no timecode source whatsoever
-./target/release/chasefire-cli simulate --cues examples/resolume.cues.json
-
-# And measure what your own sound card costs you, output looped to input
-./target/release/chasefire-cli latency --out-device "..." --device "..."
-```
-
-## The rules that matter
-
-Anyone can compare two numbers. What separates a tool an operator trusts from one
-they switch off after the first show is the edge cases, so those are written down
-as tests rather than discovered on stage.
-
-- A cue fires when timecode **crosses** it, not when it exactly equals it — a
-  dropped frame must never silently eat a cue.
-- A **large jump is a seek, not a crossing.** Drag the playhead to the encore and
-  the cues in between stay put instead of all going off at once.
-- **Rewinding re-arms**, because that is what "from the top" means. **Nothing
-  fires in reverse**, and **starting mid-show fires nothing.**
-- Arming mid-show does not dump everything you walked past while it was off.
-- LTC has no checksum, so a corrupted frame decodes into a plausible wrong time.
-  Frames are checked for valid BCD, checked against the parity bit where the
-  source maintains one, and **held back until a second frame confirms any jump**.
-  One bad frame otherwise fires a cue early and then again at the right moment:
-  one glitch, two triggers, and nothing in the cue list afterwards to explain it.
-- When the signal drops, it **freewheels** for eight frames before admitting
-  defeat — the professional norm is eight to forty.
-
-Every one of those is a test, and several of them were written after the code
-proved a comfortable assumption wrong.
-
-## Measured, not guessed
-
-On a real analogue loop — sound card out, cable, mic preamp, converter in:
-
-- Clean decoding from **-53 dBFS peak up to hard clipping**. Clipping does no
-  harm at all: biphase is essentially a square wave already.
-- **Turning the preamp up buys nothing.** Signal and noise rise together; the
-  signal-to-noise ratio stayed within 1 dB across eight gain settings. With LTC
-  you want a clean feed, not a loud one.
-- Corrupted frames start appearing below about **12 dB signal-to-noise**. Above
-  16 dB, none at all. That threshold is what the level meter is calibrated to.
-- Told the frame rate, the decoder locks on **the first frame** — the floor, since
-  a frame is 80 bits and the sync word is the last 16. Left to work the rate out
-  for itself, three frames.
-
-## Layout
-
-```
-crates/ltc      SMPTE LTC decoder and encoder. Pure DSP, no I/O.
-crates/chase    Decides which decoded frames to believe.
-crates/cue      The cue table and the firing rules. No sockets.
-crates/audio    Live capture and generation, decoded in the audio callback.
-crates/sink     Where a fired cue goes out: OSC, MIDI, MSC, RTP-MIDI, MTC.
-crates/rtpmidi  RTP-MIDI (AppleMIDI) sessions, spoken here rather than driven.
-crates/pablo    The little guitarist, and the rule that he cannot lie.
-crates/show     All of the above, wired together in one place.
-apps/chasefire       The window.
-apps/chasefire-cli   Command line, simulator and measuring tools.
-tools/               Building the sprite sheet from the artist's strips.
-```
-
-## Building
+## Building it yourself
 
 ```bash
 cargo test          # no hardware needed
 cargo build --release
 ```
 
-On Linux you will need ALSA's headers: `sudo apt install libasound2-dev`.
+On Linux you need ALSA's headers: `sudo apt install libasound2-dev`.
+
+The edge cases the cue engine gets right, and the numbers measured on real
+hardware rather than guessed at, are in
+[`docs/how-it-works.md`](docs/how-it-works.md).
 
 ## Licence
 
-Two, on purpose, and the line between them is not arbitrary.
-
 **The engine is MPL-2.0** — `ltc`, `cue`, `chase`, `audio`, `sink`, `rtpmidi`,
-`show`. That is the decoder, the firing rules, the chaser and the outputs: the
-parts where the edge cases live and where being right matters. MPL is
-file-level copyleft, so improvements to those files stay open and can be used
-by anything, including software that is not open at all.
+`show`: the decoder, the firing rules, the chaser and the outputs. Improvements
+to those files stay open and can be used by anything.
 
-**The program is GPL-3.0-or-later** — everything under `apps/`, and the
-`pablo` crate, which carries the artwork.
-
-Pablo and the transport marks were drawn by Claude to a brief, examples and
-corrections from Leo Bolster. Said plainly here because a credits screen that
-implies a person drew something a machine drew is a small lie, and this project
-does not need one.
-
-The source is open and always will be. Ready-made signed builds are what you
-pay for — once, not every year.
+**The program is GPL-3.0-or-later** — everything under `apps/`, and `pablo`,
+which carries the artwork. Pablo and the transport marks were drawn by Claude to
+a brief, examples and corrections from Leo Bolster.
 
 ### About patches
 
