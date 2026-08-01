@@ -40,6 +40,9 @@ pub struct Settings {
     /// True for the little guitarist, false for the transport marks.
     pub pablo: bool,
     pub always_on_top: bool,
+    /// How big the settings window was left. Written down because a cue list
+    /// is worth spreading out, and doing that once a session is a chore.
+    pub options_size: Option<(f32, f32)>,
     pub language: crate::text::Language,
     /// How many times the reminder has been closed. Kept because it is honest,
     /// and because it is funnier than a number nobody can see.
@@ -64,6 +67,7 @@ impl Default for Settings {
             // there for whoever wants him, one click away in Options.
             pablo: false,
             always_on_top: true,
+            options_size: None,
             language: crate::text::Language::default(),
             reminders_dismissed: 0,
         }

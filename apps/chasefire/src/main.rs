@@ -193,7 +193,17 @@ fn main() -> eframe::Result {
             viewport,
             ..Default::default()
         },
-        Box::new(move |_context| Ok(Box::new(Window::new(startup, shoot_to)))),
+        Box::new(move |context| {
+            // Dark, always, whatever the machine is set to. This is a tool for
+            // dark rooms, and a white settings window at three in the morning
+            // is the wrong answer on every screen it appears on. It also makes
+            // the theme the same everywhere: following the system meant egui's
+            // own "weak" text landed differently on Windows than on Linux,
+            // which is how a whole strip of the window became unreadable
+            // without anybody here being able to see it.
+            context.egui_ctx.set_visuals(egui::Visuals::dark());
+            Ok(Box::new(Window::new(startup, shoot_to)))
+        }),
     )
 }
 
@@ -362,6 +372,10 @@ impl Window {
             settings.pablo = true;
         }
 
+        let remembered_size = settings
+            .options_size
+            .map(|(wide, tall)| egui::vec2(wide, tall));
+
         // From here on the settings are the single source of truth: whatever
         // was typed has been folded into them, and what was not typed comes
         // from last time.
@@ -473,6 +487,7 @@ impl Window {
                 let mut options =
                     options::Options::new(device.clone(), channel, osc.clone(), cue_file.clone());
                 options.open = startup.options;
+                options.size = remembered_size;
                 options
             },
             flash: match startup.demo_flash.as_deref() {
@@ -510,6 +525,7 @@ impl Window {
             freewheel_frames: self.runner.freewheel_frames(),
             pablo: self.presentation == Presentation::Pablo,
             always_on_top: self.always_on_top,
+            options_size: self.options.size.map(|size| (size.x, size.y)),
             language: self.settings.language,
             reminders_dismissed: self.reminder.dismissed(),
         }

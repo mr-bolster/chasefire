@@ -21,6 +21,13 @@ mod unix_only {
     use std::time::{Duration, Instant};
 
     /// A port that pretends to be a DAW sending timecode.
+    ///
+    /// Names here must not be prefixes of one another. Port matching falls back
+    /// to "contains" on purpose — ALSA decorates names with client numbers that
+    /// change between reboots, and nobody should have to re-pick their desk for
+    /// that — but two tests running at once with names like `x` and `x-stop`
+    /// will happily grab each other's port. This failed one run in three until
+    /// the names stopped overlapping.
     fn a_sender(name: &str) -> Option<midir::MidiOutputConnection> {
         let midi = midir::MidiOutput::new("chasefire-mtc-source").ok()?;
         let connection = midi.create_virtual(name).ok()?;
@@ -49,13 +56,13 @@ mod unix_only {
 
     #[test]
     fn a_cue_fires_from_timecode_that_arrived_over_midi() {
-        let Some(mut out) = a_sender("chasefire-daw") else {
+        let Some(mut out) = a_sender("cf-mtc-fire") else {
             eprintln!("no MIDI stack here; skipping");
             return;
         };
 
         let mut runner = Runner::new(25);
-        if runner.open_mtc_input("chasefire-daw").is_err() {
+        if runner.open_mtc_input("cf-mtc-fire").is_err() {
             eprintln!("the virtual port did not appear; skipping");
             return;
         }
@@ -111,11 +118,11 @@ mod unix_only {
         // There is no "stopped" message in MTC. The stream simply ends, so a
         // timeout is the whole of the detection — and until it fires, the show
         // still looks like it is running.
-        let Some(mut out) = a_sender("chasefire-daw-stop") else {
+        let Some(mut out) = a_sender("cf-mtc-stop") else {
             return;
         };
         let mut runner = Runner::new(25);
-        if runner.open_mtc_input("chasefire-daw-stop").is_err() {
+        if runner.open_mtc_input("cf-mtc-stop").is_err() {
             return;
         }
 

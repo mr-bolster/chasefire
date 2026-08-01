@@ -37,9 +37,6 @@ const DEST: f32 = 76.0;
 /// margin on both sides, and the indent the section headings put on their
 /// contents.
 const CHROME: f32 = 100.0;
-/// How tall the settings window opens. Chosen to sit comfortably on the
-/// shortest screen anybody is likely to run a show from.
-const WINDOW_TALL: f32 = 1000.0;
 /// The picker that says what sort of message a line carries.
 const KIND: f32 = 74.0;
 /// The smallest each elastic column may become. Below these a field stops
@@ -94,6 +91,8 @@ pub struct Options {
     osc_target: String,
     /// What the next output added will be called. Cues address outputs by name.
     osc_name: String,
+    /// How big the window is, so it opens the same way next time.
+    pub size: Option<egui::Vec2>,
     /// Which source the input section is showing.
     source_tab: TimecodeFrom,
     mtc_in_ports: Vec<String>,
@@ -214,6 +213,7 @@ impl Options {
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
             osc_name: String::new(),
+            size: None,
             source_tab: TimecodeFrom::Ltc,
             mtc_in_ports: Vec::new(),
             mtc_ports_listed: false,
@@ -265,22 +265,29 @@ impl Options {
         let viewport = egui::ViewportId::from_hash_of("chasefire-options");
         let builder = egui::ViewportBuilder::default()
             .with_title(words.options_title)
-            // Tall enough that twenty cues fit without scrolling, and wide
-            // enough that an OSC address is readable without dragging it out.
-            // Wide enough that a cue with a long OSC address and a couple of
-            // arguments reads without dragging anything, and as tall as a
-            // 1080-line screen will take without the bottom going under a
-            // taskbar. The cue list is at the end and scrolls into view; it
-            // shows its full twenty-five lines when it gets there.
-            .with_inner_size([Widths::narrowest(true) + CHROME + 120.0, WINDOW_TALL])
-            // Narrow enough to be dragged out of the way, wide enough that the
-            // cue table still draws every field at a size somebody can click.
-            // Below this the list scrolls sideways rather than shrinking things
-            // past being usable.
+            // The size somebody left it at last time, or — the first time —
+            // most of the screen it is opening on. A cue list wants room, and
+            // making everybody drag the corner on their first visit is a poor
+            // welcome. Not maximised: maximised hides the window behind it and
+            // stops being a settings window and starts being the application.
+            .with_inner_size(self.size.unwrap_or_else(|| {
+                let screen = context
+                    .input(|input| input.viewport().monitor_size)
+                    .unwrap_or(egui::vec2(1280.0, 900.0));
+                egui::vec2(
+                    (screen.x * 0.92).clamp(Widths::narrowest(true) + CHROME, 1600.0),
+                    (screen.y * 0.90).max(560.0),
+                )
+            }))
             .with_min_inner_size([Widths::narrowest(true) + CHROME, 420.0]);
 
         let mut still_open = true;
         context.show_viewport_immediate(viewport, builder, |context, _class| {
+            // Whatever it has been dragged to, kept for next time. Read every
+            // frame because there is no "finished resizing" to hang it on.
+            if let Some(rect) = context.input(|input| input.viewport().inner_rect) {
+                self.size = Some(rect.size());
+            }
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(context.style().as_ref()).inner_margin(MARGIN))
                 .show(context, |ui| {
@@ -891,9 +898,7 @@ impl Options {
             args: args_width,
         } = widths;
 
-        if cues.is_empty() {
-            hint(ui, words.no_cues_yet);
-        } else {
+        {
             egui::ScrollArea::both()
                 .max_height(CUE_ROW * CUES_VISIBLE)
                 .min_scrolled_height(CUE_ROW * CUES_VISIBLE)
