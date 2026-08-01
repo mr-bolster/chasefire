@@ -1,3 +1,10 @@
+// A Windows release build must not open a console. Without this the operating
+// system gives every binary one, and Chasefire arrived with a large empty black
+// window beside it — reported from a real Windows machine, because there is no
+// way to see this from Linux. Kept in debug builds, where the console is where
+// CHASEFIRE_DEBUG goes.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Chasefire, the window.
 //!
 //! Two modes, and the small one is the one that matters. It holds four things:
@@ -766,7 +773,11 @@ impl eframe::App for Window {
                             });
                         }
                         None => {
-                            ui.label(egui::RichText::new(words.no_cue_ahead).size(13.0).weak());
+                            ui.label(
+                                egui::RichText::new(words.no_cue_ahead)
+                                    .size(13.0)
+                                    .color(egui::Color32::from_rgb(148, 154, 166)),
+                            );
                         }
                     }
                 });
@@ -829,7 +840,12 @@ impl eframe::App for Window {
                 )
                 .fill(colour)
             } else {
-                egui::Button::new(egui::RichText::new(words.pin).weak())
+                // Same reason as the strip below: `weak()` on Windows is close
+                // to invisible, and a button nobody can read is a button
+                // nobody presses.
+                egui::Button::new(
+                    egui::RichText::new(words.pin).color(egui::Color32::from_rgb(148, 154, 166)),
+                )
             };
             if ui
                 .add(pin_button.min_size(egui::vec2(pin_width, ROW)))
@@ -882,7 +898,10 @@ impl eframe::App for Window {
                         egui::RichText::new(format!("{label:<4}{value}"))
                             .monospace()
                             .size(10.0)
-                            .weak()
+                            // Stated, not `weak()`: on Windows the theme's weak
+                            // colour left this line all but invisible, and it
+                            // is the line that says which card is open.
+                            .color(egui::Color32::from_rgb(148, 154, 166))
                     };
                     ui.label(line(
                         words.in_label,
@@ -1033,9 +1052,16 @@ fn trim_to(text: &str, room: usize) -> String {
         + "…"
 }
 
-/// Small, dim text: present when looked for, invisible when not.
+/// Small text: present when looked for, quiet when not.
+///
+/// A stated colour rather than `weak()`. egui works that out from the theme and
+/// on Windows it came out almost invisible — which for the line that says which
+/// sound card is open is not "quiet", it is gone. Dim enough not to compete
+/// with the timecode, solid enough to read on any screen.
 fn small(text: &str) -> egui::RichText {
-    egui::RichText::new(text).size(10.0).weak()
+    egui::RichText::new(text)
+        .size(10.0)
+        .color(egui::Color32::from_rgb(148, 154, 166))
 }
 
 /// Device names carry the whole ALSA or WASAPI incantation, which is no use in
