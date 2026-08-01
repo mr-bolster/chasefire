@@ -777,11 +777,14 @@ impl Options {
         } else {
             egui::ScrollArea::both()
                 .max_height(CUE_ROW * CUES_VISIBLE)
-                // Wide, but only as tall as it needs to be. Locking the
-                // vertical axis too made a four-cue list reserve room for
-                // twenty and push Timing, Appearance, Support and About off
-                // the bottom of the window.
-                .auto_shrink([false, true])
+                .min_scrolled_height(CUE_ROW * CUES_VISIBLE)
+                // Always twenty lines tall, whether there are two cues or
+                // two hundred. A box that grows as cues are added moves every
+                // button under it while somebody is working, and a short list
+                // gives nowhere to drop the next one. What is below stays
+                // reachable: the window opens tall enough to show that there
+                // is more under it.
+                .auto_shrink([false, false])
                 .id_salt("cuelist")
                 .show(ui, |ui| {
                     // Laid out by hand rather than with a Grid, and not for
