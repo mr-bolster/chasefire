@@ -61,7 +61,7 @@ const LIVE: egui::Color32 = egui::Color32::from_rgb(38, 122, 62);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(132, 46, 42);
 /// How many lines of the cue list are visible without scrolling when there is
 /// room. Lines, not cues: a cue that sends two messages takes two of them.
-const CUES_VISIBLE: f32 = 25.0;
+const CUES_VISIBLE: f32 = 20.0;
 
 /// Where the money goes. Straight there, one click, no detour through a page
 /// that only exists to hold a link.
