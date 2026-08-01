@@ -107,6 +107,10 @@ pub struct Options {
     output_tab: Carrier,
     /// Which cues the list is showing.
     filter: Filter,
+    /// The empty lines under the list, each one a cue waiting to be typed into.
+    /// Held here rather than in the engine: a line nobody has written in is not
+    /// a cue and has no business being armed or saved.
+    drafts: Vec<cue::Cue>,
     /// Which cues are ticked, by id rather than by position: the list gets
     /// edited and reordered underneath, and a selection that follows row
     /// numbers ends up pointing at the wrong cues.
@@ -206,6 +210,7 @@ impl Options {
             midi_name: String::new(),
             output_tab: Carrier::Osc,
             filter: Filter::Everything,
+            drafts: Vec::new(),
             selected: std::collections::HashSet::new(),
             cue_path: cues.unwrap_or_else(|| {
                 crate::cuefile::untitled(&crate::cuefile::default_directory(), "cues")
@@ -752,7 +757,8 @@ impl Options {
     ) {
         let mut cues = runner.cues().to_vec();
         let mut changed = false;
-        let mut remove_step = None;
+        let mut remove_cue: Option<usize> = None;
+        let mut remove_step: Option<(usize, usize)> = None;
         // Measured **here**, where the rows are actually drawn, not up at the
         // panel: the section indents its contents, and handing the table the
         // panel's width made every row that much too wide for the window. The
@@ -765,12 +771,13 @@ impl Options {
         let show_destination = outputs.len() > 1;
 
         let filter = self.filter;
+        let widths = Widths::for_a_window(width, show_destination);
         let Widths {
             at: at_width,
             name: name_width,
             address: address_width,
             args: args_width,
-        } = Widths::for_a_window(width, show_destination);
+        } = widths;
 
         if cues.is_empty() {
             hint(ui, words.no_cues_yet);
@@ -816,196 +823,62 @@ impl Options {
                         if !filter.shows(cue) {
                             continue;
                         }
-                        // Alternating bands, painted behind the whole cue —
-                        // every one of its messages, not just the first line.
-                        // Reserved before the block is drawn and filled in
-                        // after, once its real height is known.
-                        let band = ui.painter().add(egui::Shape::Noop);
-                        let block = ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            let steps = cue.steps.len();
-                            for step_index in 0..steps {
-                                let first = step_index == 0;
-                                row(ui, |ui| {
-                                    // The later messages of a cue line up under
-                                    // the first with nothing repeated: they all
-                                    // happen at one moment, and the moment is
-                                    // written once. The columns are still
-                                    // allocated, so everything stays in step.
-                                    cell(ui, PICK, |ui| {
-                                        if !first {
-                                            return;
-                                        }
-                                        let mut picked = self.selected.contains(&cue.id);
-                                        if ui
-                                            .checkbox(&mut picked, "")
-                                            .on_hover_text(words.pick_tooltip)
-                                            .changed()
-                                        {
-                                            if picked {
-                                                self.selected.insert(cue.id);
-                                            } else {
-                                                self.selected.remove(&cue.id);
-                                            }
-                                        }
-                                    });
-                                    gap(ui);
-
-                                    cell(ui, TICK, |ui| {
-                                        if !first {
-                                            return;
-                                        }
-                                        // Green for armed, red for not. A cue
-                                        // list gets read in a hurry and from an
-                                        // angle, and whether a line will fire
-                                        // is the one thing that has to be
-                                        // legible without leaning in.
-                                        let colour = if cue.enabled { LIVE } else { MUTED };
-                                        let widgets = &mut ui.visuals_mut().widgets;
-                                        for widget in [
-                                            &mut widgets.inactive,
-                                            &mut widgets.hovered,
-                                            &mut widgets.active,
-                                        ] {
-                                            widget.bg_fill = colour;
-                                            widget.weak_bg_fill = colour;
-                                        }
-                                        changed |= ui
-                                            .checkbox(&mut cue.enabled, "")
-                                            .on_hover_text(if cue.enabled {
-                                                words.enabled_tooltip
-                                            } else {
-                                                words.disabled_tooltip
-                                            })
-                                            .changed();
-                                    });
-                                    gap(ui);
-
-                                    cell(ui, at_width, |ui| {
-                                        if !first {
-                                            return;
-                                        }
-                                        // Typed the way the trade writes it,
-                                        // and only accepted once it is actually
-                                        // a timecode: a half-typed one must not
-                                        // move a cue to midnight.
-                                        let mut text = cue.at.to_string();
-                                        let edited = ui
-                                            .add(
-                                                egui::TextEdit::singleline(&mut text)
-                                                    .desired_width(at_width)
-                                                    .font(egui::TextStyle::Monospace),
-                                            )
-                                            .on_hover_text(words.at_tooltip)
-                                            .changed();
-                                        if edited {
-                                            if let Some(parsed) = parse_timecode(&text) {
-                                                cue.at = parsed;
-                                                changed = true;
-                                            }
-                                        }
-                                    });
-                                    gap(ui);
-
-                                    cell(ui, name_width, |ui| {
-                                        if first {
-                                            changed |= ui
-                                                .add(
-                                                    egui::TextEdit::singleline(&mut cue.name)
-                                                        .desired_width(name_width),
-                                                )
-                                                .changed();
-                                        }
-                                    });
-                                    gap(ui);
-
-                                    changed |= step_editor(
-                                        ui,
-                                        &mut cue.steps[step_index],
-                                        &outputs,
-                                        show_destination,
-                                        words,
-                                        address_width,
-                                        args_width,
-                                    );
-
-                                    // The two buttons at the end of every line,
-                                    // in the same two columns whichever line it
-                                    // is: one more message, and take one away.
-                                    cell(ui, ADD_STEP, |ui| {
-                                        if !first {
-                                            return;
-                                        }
-                                        if ui
-                                            .add_sized(ui.available_size(), egui::Button::new("+"))
-                                            .on_hover_text(words.add_message)
-                                            .clicked()
-                                        {
-                                            cue.steps.push(cue::Step::anywhere(
-                                                cue::Message::Osc {
-                                                    address: String::new(),
-                                                    args: Vec::new(),
-                                                },
-                                            ));
-                                            changed = true;
-                                        }
-                                    });
-                                    gap(ui);
-
-                                    // Always "take this message away", never
-                                    // "take the cue away": a whole cue goes by
-                                    // ticking it and using the button under the
-                                    // list, so there are never two ways to do
-                                    // the same thing sitting side by side.
-                                    cell(ui, DROP_STEP, |ui| {
-                                        if steps < 2 {
-                                            return;
-                                        }
-                                        if ui
-                                            .add_sized(ui.available_size(), egui::Button::new("−"))
-                                            .on_hover_text(words.remove_message)
-                                            .clicked()
-                                        {
-                                            remove_step = Some((index, step_index));
-                                        }
-                                    });
-                                });
-                            }
-                        });
-
-                        if index % 2 == 1 {
-                            let stripe = ui.visuals().faint_bg_color;
-                            ui.painter().set(
-                                band,
-                                egui::Shape::rect_filled(block.response.rect, 2.0, stripe),
-                            );
+                        let outcome = cue_block(
+                            ui,
+                            cue,
+                            &mut self.selected,
+                            &outputs,
+                            show_destination,
+                            words,
+                            &widths,
+                            lines % 2 == 1,
+                            false,
+                        );
+                        changed |= outcome.changed;
+                        if outcome.remove_cue {
+                            remove_cue = Some(index);
+                        }
+                        if let Some(step) = outcome.remove_step {
+                            remove_step = Some((index, step));
                         }
                         lines += cue.steps.len();
                     }
 
-                    // Rule the rest of the box. Empty space is a box that has
-                    // run out; ruled lines are a list with room in it, and the
-                    // difference matters when somebody is looking for where the
-                    // next cue goes.
-                    let width = ui.max_rect().width();
-                    let stripe = ui.visuals().faint_bg_color;
-                    let rule = ui.visuals().widgets.noninteractive.bg_stroke.color;
-                    ui.add_space(1.0);
-                    for spare in lines..(CUES_VISIBLE as usize) {
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(width, CUE_ROW - 4.0),
-                            egui::Sense::hover(),
+                    // The rest of the box is real rows too, not ruling. Type a
+                    // time or a name into one and the cue exists — which is how
+                    // anybody who has used a spreadsheet expects a list to
+                    // behave, and it saves reaching for a button to make each
+                    // one.
+                    let spare = (CUES_VISIBLE as usize).saturating_sub(lines);
+                    while self.drafts.len() < spare {
+                        self.drafts.push(blank_cue());
+                    }
+                    let mut born = None;
+                    for slot in 0..spare {
+                        let outcome = cue_block(
+                            ui,
+                            &mut self.drafts[slot],
+                            &mut self.selected,
+                            &outputs,
+                            show_destination,
+                            words,
+                            &widths,
+                            (lines + slot) % 2 == 1,
+                            true,
                         );
-                        if spare % 2 == 1 {
-                            ui.painter().rect_filled(rect, 2.0, stripe);
+                        if outcome.changed && has_something_in_it(&self.drafts[slot]) {
+                            born = Some(slot);
                         }
-                        // A hairline along the bottom, so the rows read as rows
-                        // rather than as bands of shading.
-                        ui.painter().hline(
-                            rect.x_range(),
-                            rect.bottom(),
-                            egui::Stroke::new(1.0, rule),
-                        );
+                    }
+                    if let Some(slot) = born {
+                        let mut fresh = self.drafts.remove(slot);
+                        fresh.id = cues.iter().map(|cue| cue.id).max().unwrap_or(0) + 1;
+                        if fresh.name.trim().is_empty() {
+                            fresh.name = words.unnamed_cue.replace("{}", &fresh.id.to_string());
+                        }
+                        cues.push(fresh);
+                        self.drafts.insert(slot, blank_cue());
+                        changed = true;
                     }
                 });
         }
@@ -1482,6 +1355,226 @@ fn heading(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
     );
     gap(ui);
     response
+}
+
+/// What a row asked for, on the way back out.
+#[derive(Default)]
+struct RowOutcome {
+    changed: bool,
+    remove_cue: bool,
+    remove_step: Option<usize>,
+}
+
+/// One cue and all its messages, drawn.
+///
+/// The same code draws a cue and an empty line waiting to become one. That is
+/// the point: a blank row that merely *looks* like the real thing drifts away
+/// from it the first time either changes, and then somebody types into
+/// something that turns out to be a picture.
+#[allow(clippy::too_many_arguments)]
+fn cue_block(
+    ui: &mut egui::Ui,
+    cue: &mut cue::Cue,
+    selected: &mut std::collections::HashSet<u32>,
+    outputs: &[String],
+    show_destination: bool,
+    words: &'static crate::text::Text,
+    widths: &Widths,
+    striped: bool,
+    blank: bool,
+) -> RowOutcome {
+    let mut outcome = RowOutcome::default();
+
+    // Alternating bands, painted behind the whole cue — every one of its
+    // messages, not just the first line. Reserved before the block is drawn and
+    // filled in after, once its real height is known.
+    let band = ui.painter().add(egui::Shape::Noop);
+    let block = ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let steps = cue.steps.len();
+        for step_index in 0..steps {
+            let first = step_index == 0;
+            row(ui, |ui| {
+                // The later messages of a cue line up under the first with
+                // nothing repeated: they all happen at one moment, and the
+                // moment is written once. The columns are still allocated, so
+                // everything stays in step.
+                cell(ui, PICK, |ui| {
+                    if !first || blank {
+                        return;
+                    }
+                    let mut picked = selected.contains(&cue.id);
+                    if ui
+                        .checkbox(&mut picked, "")
+                        .on_hover_text(words.pick_tooltip)
+                        .changed()
+                    {
+                        if picked {
+                            selected.insert(cue.id);
+                        } else {
+                            selected.remove(&cue.id);
+                        }
+                    }
+                });
+                gap(ui);
+
+                cell(ui, TICK, |ui| {
+                    if !first {
+                        return;
+                    }
+                    // Green for armed, red for not. A cue list gets read in a
+                    // hurry and from an angle, and whether a line will fire is
+                    // the one thing that has to be legible without leaning in.
+                    //
+                    // A line that is not a cue yet gets neither colour. Green
+                    // on an empty line would be saying it is going to fire,
+                    // and it is not going to do anything at all.
+                    if !blank {
+                        let colour = if cue.enabled { LIVE } else { MUTED };
+                        let widgets = &mut ui.visuals_mut().widgets;
+                        for widget in [
+                            &mut widgets.inactive,
+                            &mut widgets.hovered,
+                            &mut widgets.active,
+                        ] {
+                            widget.bg_fill = colour;
+                            widget.weak_bg_fill = colour;
+                        }
+                    }
+                    outcome.changed |= ui
+                        .checkbox(&mut cue.enabled, "")
+                        .on_hover_text(if cue.enabled {
+                            words.enabled_tooltip
+                        } else {
+                            words.disabled_tooltip
+                        })
+                        .changed();
+                });
+                gap(ui);
+
+                cell(ui, widths.at, |ui| {
+                    if !first {
+                        return;
+                    }
+                    // Typed the way the trade writes it, and only accepted once
+                    // it is actually a timecode: a half-typed one must not move
+                    // a cue to midnight.
+                    let mut text = cue.at.to_string();
+                    let edited = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut text)
+                                .desired_width(widths.at)
+                                .font(egui::TextStyle::Monospace),
+                        )
+                        .on_hover_text(words.at_tooltip)
+                        .changed();
+                    if edited {
+                        if let Some(parsed) = parse_timecode(&text) {
+                            cue.at = parsed;
+                            outcome.changed = true;
+                        }
+                    }
+                });
+                gap(ui);
+
+                cell(ui, widths.name, |ui| {
+                    if first {
+                        outcome.changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut cue.name)
+                                    .desired_width(widths.name),
+                            )
+                            .changed();
+                    }
+                });
+                gap(ui);
+
+                outcome.changed |= step_editor(
+                    ui,
+                    &mut cue.steps[step_index],
+                    outputs,
+                    show_destination,
+                    words,
+                    widths.address,
+                    widths.args,
+                );
+
+                // One more message at this same moment, and take one away.
+                // A line that is not a cue yet has neither: there is nothing
+                // to add to.
+                cell(ui, ADD_STEP, |ui| {
+                    if !first || blank {
+                        return;
+                    }
+                    if ui
+                        .add_sized(ui.available_size(), egui::Button::new("+"))
+                        .on_hover_text(words.add_message)
+                        .clicked()
+                    {
+                        cue.steps.push(cue::Step::anywhere(cue::Message::Osc {
+                            address: String::new(),
+                            args: Vec::new(),
+                        }));
+                        outcome.changed = true;
+                    }
+                });
+                gap(ui);
+
+                cell(ui, DROP_STEP, |ui| {
+                    if steps < 2 || blank {
+                        return;
+                    }
+                    if ui
+                        .add_sized(ui.available_size(), egui::Button::new("−"))
+                        .on_hover_text(words.remove_message)
+                        .clicked()
+                    {
+                        outcome.remove_step = Some(step_index);
+                    }
+                });
+            });
+        }
+    });
+
+    if striped {
+        let stripe = ui.visuals().faint_bg_color;
+        ui.painter().set(
+            band,
+            egui::Shape::rect_filled(block.response.rect, 2.0, stripe),
+        );
+    }
+    outcome
+}
+
+/// An empty line, waiting to be typed into.
+fn blank_cue() -> cue::Cue {
+    cue::Cue::new(
+        0,
+        String::new(),
+        ltc::Timecode::new(0, 0, 0, 0),
+        cue::Message::Osc {
+            address: String::new(),
+            args: Vec::new(),
+        },
+    )
+}
+
+/// Has somebody actually put something in this line?
+///
+/// A tick is not enough: reaching for one and changing your mind should not
+/// leave a cue behind at midnight.
+fn has_something_in_it(cue: &cue::Cue) -> bool {
+    if !cue.name.trim().is_empty() {
+        return true;
+    }
+    if cue.at != ltc::Timecode::new(0, 0, 0, 0) {
+        return true;
+    }
+    cue.steps.iter().any(|step| match &step.send {
+        cue::Message::Osc { address, args } => !address.trim().is_empty() || !args.is_empty(),
+        // Any other kind had to be chosen deliberately.
+        _ => true,
+    })
 }
 
 /// Edit one message of a cue: where it goes, what it says, what it carries.
