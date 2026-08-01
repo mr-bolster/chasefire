@@ -1,0 +1,106 @@
+name: Release
+
+# Tag it and the builds appear. Doing this by hand once is fine; doing it by
+# hand every time is how a release eventually goes out built from somebody's
+# laptop with uncommitted changes in it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The same tests that guard every commit, run again on the exact tag. A
+  # release is not the moment to find out that main and the tag disagree.
+  test:
+    name: Test before releasing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: ALSA headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo test --workspace
+
+  build:
+    name: Build for ${{ matrix.label }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x64
+          - os: ubuntu-latest
+            label: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: ALSA headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - run: cargo build --release
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/chasefire.exe dist/
+          Copy-Item target/release/chasefire-cli.exe dist/
+          Copy-Item README.md, LICENSE, LICENSE-MPL-2.0 dist/
+          Copy-Item -Recurse examples dist/examples
+          Compress-Archive -Path dist/* -DestinationPath chasefire-windows-x64.zip
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp target/release/chasefire target/release/chasefire-cli dist/
+          cp README.md LICENSE LICENSE-MPL-2.0 dist/
+          cp -r examples dist/examples
+          tar -czf chasefire-linux-x64.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chasefire-${{ matrix.label }}
+          path: |
+            chasefire-windows-x64.zip
+            chasefire-linux-x64.tar.gz
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+          merge-multiple: true
+
+      - name: Attach the builds to the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          # Every release before 1.0 goes out as a prerelease. It downloads the
+          # same and the link is the same; what changes is that GitHub says
+          # plainly this is early, which is the honest thing to say while it is.
+          gh release create "$tag" \
+            --title "Chasefire $tag" \
+            --notes-file docs/release-notes.md \
+            --prerelease \
+            downloaded/*
