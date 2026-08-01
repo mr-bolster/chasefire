@@ -131,6 +131,7 @@ enum Carrier {
 }
 
 impl Carrier {
+    /// Every carrier, for the cue-list filter, which still shows all three.
     const ALL: [Carrier; 3] = [Carrier::Osc, Carrier::Midi, Carrier::Network];
 
     fn label(self, words: &'static crate::text::Text) -> &'static str {
@@ -204,7 +205,7 @@ impl Options {
             ports_listed: false,
             midi_port: None,
             midi_name: String::new(),
-            output_tab: Carrier::Osc,
+            output_tab: Carrier::Midi,
             filter: Filter::Everything,
             selected: std::collections::HashSet::new(),
             cue_path: cues.unwrap_or_else(|| {
@@ -292,6 +293,10 @@ impl Options {
         // one first pushed all of it below the fold.
         self.input_section(ui, runner, words);
         self.outputs_section(ui, runner, words);
+        // OSC on its own, between the outputs and the timing, because it is the
+        // one every show touches and it should not be behind a click.
+        section(ui, words.tab_osc);
+        self.osc_outputs(ui, runner, words);
         self.timing_section(ui, runner, words);
         appearance_section(ui, presentation, language, words);
         support_section(ui, words);
@@ -400,14 +405,20 @@ impl Options {
         // network are the same messages and completely different things to set
         // up. What is *not* tabbed is the cue list — see `Filter`.
         ui.horizontal(|ui| {
-            for carrier in Carrier::ALL {
+            // OSC is not here: it has a section of its own below. What is left
+            // is the pair that are the same messages down very different
+            // cables, and to somebody hunting for why nothing is moving they
+            // are two different cables to check.
+            for carrier in [Carrier::Midi, Carrier::Network] {
                 ui.selectable_value(&mut self.output_tab, carrier, carrier.label(words));
             }
         });
         ui.add_space(6.0);
 
         match self.output_tab {
-            Carrier::Osc => self.osc_outputs(ui, runner, words),
+            // Cannot happen now that OSC has its own section, but a settings
+            // file from a version where it could is not a reason to panic.
+            Carrier::Osc => self.midi_outputs(ui, runner, words),
             // Listed rather than hidden. Somebody deciding whether this tool
             // fits their rig needs to know what it will and will not do, and
             // finding that out by not finding a setting is a poor way to learn.
