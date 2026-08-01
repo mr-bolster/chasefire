@@ -286,16 +286,12 @@ impl Options {
         language: &mut crate::text::Language,
     ) {
         let words = crate::text::Text::of(*language);
-        // The cue list goes last, and it goes last because it is the only
-        // thing here that has no natural size. Everything above it is a
-        // handful of rows and can be taken in at a glance; putting the long
-        // one first pushed all of it below the fold.
         self.input_section(ui, runner, words);
         self.outputs_section(ui, runner, words);
+        self.cues_section(ui, runner, words);
         self.timing_section(ui, runner, words);
         appearance_section(ui, presentation, language, words);
         support_section(ui, words);
-        self.cues_section(ui, runner, words);
 
         if let Some(message) = &self.message {
             ui.add_space(GAP);
