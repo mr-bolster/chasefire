@@ -8,6 +8,7 @@
 mod cuefile;
 mod options;
 mod pablo_view;
+mod presets;
 mod reminder;
 mod settings;
 mod text;
@@ -39,6 +40,13 @@ struct Startup {
     arm: bool,
     /// Show the transport marks instead of the little guitarist.
     sober: bool,
+    /// Send MIDI Time Code out of this port from the moment it starts. For a
+    /// machine whose whole job is to convert, booting with nobody in front of
+    /// it.
+    mtc: Option<String>,
+    /// Open the settings window straight away. For a machine being set up, and
+    /// for anybody who would rather start where the work is.
+    options: bool,
     /// Force a flash on the first frame, so a picture can be taken of it.
     /// Documentation and eyeballing only — nothing fires here.
     demo_flash: Option<String>,
@@ -65,6 +73,8 @@ fn parse_startup() -> Startup {
         demo_flash: value("--demo-flash"),
         arm: arguments.iter().any(|argument| argument == "--arm"),
         sober: arguments.iter().any(|argument| argument == "--sober"),
+        mtc: value("--mtc"),
+        options: arguments.iter().any(|argument| argument == "--options"),
     }
 }
 
@@ -394,6 +404,13 @@ impl Window {
             Err(error) => notes.push(startup_words.audio_error(&error)),
         }
 
+        if let Some(port) = &startup.mtc {
+            match runner.start_mtc(port) {
+                Ok(()) => notes.push(startup_words.mtc_sending.replace("{}", port)),
+                Err(error) => notes.push(error),
+            }
+        }
+
         // Written once on the way in, not only when something later changes.
         // Otherwise a first run that was given everything on the command line
         // would remember none of it: nothing had changed, so nothing was saved,
@@ -416,7 +433,12 @@ impl Window {
             reminder: reminder::Reminder::new(settings.reminders_dismissed),
             settings_dirty_since: None,
             settings,
-            options: options::Options::new(device.clone(), channel, osc.clone(), cue_file.clone()),
+            options: {
+                let mut options =
+                    options::Options::new(device.clone(), channel, osc.clone(), cue_file.clone());
+                options.open = startup.options;
+                options
+            },
             flash: match startup.demo_flash.as_deref() {
                 Some("failed") => Some(Flash::failed()),
                 Some(_) => Some(Flash::fired()),
@@ -625,6 +647,21 @@ impl eframe::App for Window {
                                 .strong()
                                 .color(egui::Color32::from_rgb(185, 190, 200)),
                         );
+                        // Sending the clock back out is a thing other machines
+                        // are relying on, and until now the window said nothing
+                        // about it: somebody could have it running, or not
+                        // running, and no way to tell from here.
+                        if let Some(port) = self.runner.mtc_port() {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(words.mtc_badge)
+                                    .size(11.0)
+                                    .monospace()
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(120, 200, 140)),
+                            )
+                            .on_hover_text(words.mtc_sending.replace("{}", port));
+                        }
                         // The short word, not the sentence: it balances against
                         // the source on the left instead of running off the
                         // edge. The full sentence is a hover away, and Pablo is

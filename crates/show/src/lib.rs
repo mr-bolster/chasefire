@@ -15,7 +15,7 @@
 use chase::{Chaser, Signal};
 use cue::{Cue, Engine, Firing};
 use ltc::Timecode;
-use sink::{OscSink, Sink};
+use sink::{MidiSink, MtcClock, NetworkMidiSink, OscSink, Outputs};
 use std::time::Instant;
 
 /// Whether the input is actually delivering anything.
@@ -89,10 +89,18 @@ pub enum Event {
 }
 
 /// Where a cue is going, for the sake of the animation.
-fn flourish_for(action: &cue::Action) -> pablo::Flourish {
-    match action {
-        cue::Action::Osc { .. } => pablo::Flourish::Osc,
-        _ => pablo::Flourish::Midi,
+///
+/// A cue can now send to several places at once, so there is a choice to make.
+/// MIDI wins: it is the rarer flourish, and a cue that moves a desk is the one
+/// worth noticing out of the corner of an eye.
+fn flourish_for(steps: &[cue::Step]) -> pablo::Flourish {
+    if steps
+        .iter()
+        .any(|step| step.send.carried_by() == cue::Carrier::Midi)
+    {
+        pablo::Flourish::Midi
+    } else {
+        pablo::Flourish::Osc
     }
 }
 
@@ -100,7 +108,16 @@ pub struct Runner {
     capture: Option<audio::Capture>,
     chaser: Chaser,
     engine: Engine,
-    output: Option<OscSink>,
+    outputs: Outputs,
+    /// Set when timecode is arriving from somewhere other than the sound card.
+    external_source: Option<Source>,
+    /// Sending the timecode we are chasing back out as MIDI Time Code, when
+    /// somebody asked for that. It keeps its own clock on its own thread.
+    mtc: Option<MtcClock>,
+    /// What the single OSC destination is called when nobody has named any.
+    /// Cues that name nowhere land here, so a one-machine show never has to
+    /// learn that outputs have names at all.
+    default_osc: Option<String>,
     /// The rate the operator pinned, if they pinned one. Left alone, the rate
     /// is worked out from the signal at the cost of two extra frames of lock.
     pinned_fps: Option<f64>,
@@ -125,7 +142,10 @@ impl Runner {
             capture: None,
             chaser: Chaser::new(nominal_fps),
             engine: Engine::new(nominal_fps),
-            output: None,
+            outputs: Outputs::new(),
+            external_source: None,
+            mtc: None,
+            default_osc: None,
             pinned_fps: None,
             settled: false,
             samples_per_frame: 48_000.0 / nominal_fps as f64,
@@ -196,17 +216,110 @@ impl Runner {
         self.current = None;
     }
 
+    /// Point the unnamed OSC output at a machine. This is the one a show with
+    /// a single destination uses without ever naming it.
     pub fn connect_osc(&mut self, target: &str) -> Result<(), String> {
+        self.connect_osc_as("osc", target)
+    }
+
+    /// Point a **named** OSC output at a machine, so cues can address it.
+    pub fn connect_osc_as(&mut self, name: &str, target: &str) -> Result<(), String> {
         let sink = OscSink::connect(target).map_err(|error| error.to_string())?;
-        self.output = Some(sink);
+        let described = sink.target().to_string();
+        self.outputs.put(name, Box::new(sink));
+        if self.default_osc.is_none() {
+            self.default_osc = Some(name.to_string());
+        }
+        let _ = described;
         Ok(())
+    }
+
+    /// Everywhere this machine can send MIDI.
+    pub fn midi_ports() -> Vec<String> {
+        MidiSink::ports().unwrap_or_default()
+    }
+
+    /// Open a local MIDI port under a name cues can address.
+    pub fn connect_midi_as(&mut self, name: &str, port: &str) -> Result<(), String> {
+        let sink = MidiSink::open(port)?;
+        self.outputs.put(name, Box::new(sink));
+        Ok(())
+    }
+
+    /// Start an RTP-MIDI session under a name cues can address.
+    ///
+    /// With a `peer` this end invites; without, it waits to be invited, which
+    /// is what a Mac or rtpMIDI does when somebody presses Connect over there.
+    pub fn connect_network_midi_as(
+        &mut self,
+        name: &str,
+        port: u16,
+        peer: Option<&str>,
+    ) -> Result<(), String> {
+        let peer = match peer {
+            Some(text) if !text.trim().is_empty() => Some(
+                text.trim()
+                    .parse()
+                    .map_err(|_| format!("'{}' is not an address and a port", text.trim()))?,
+            ),
+            _ => None,
+        };
+        let sink = NetworkMidiSink::start(name, port, peer)?;
+        self.outputs.put(name, Box::new(sink));
+        Ok(())
+    }
+
+    /// Start sending MIDI Time Code out of a port.
+    ///
+    /// This is the program's other job: a rig with LTC on a cable and a machine
+    /// that only speaks MTC has a hole in it, and this fills it.
+    pub fn start_mtc(&mut self, port: &str) -> Result<(), String> {
+        self.mtc = Some(MtcClock::start(port)?);
+        Ok(())
+    }
+
+    pub fn stop_mtc(&mut self) {
+        self.mtc = None;
+    }
+
+    /// Which port MTC is going out of, if it is.
+    pub fn mtc_port(&self) -> Option<&str> {
+        self.mtc.as_ref().map(|clock| clock.port())
+    }
+
+    pub fn disconnect_output(&mut self, name: &str) -> bool {
+        if self.default_osc.as_deref() == Some(name) {
+            self.default_osc = None;
+        }
+        self.outputs.remove(name)
+    }
+
+    /// The names of everywhere cues can be sent.
+    pub fn output_names(&self) -> Vec<String> {
+        self.outputs.names().map(|name| name.to_string()).collect()
+    }
+
+    pub fn output_described(&self, name: &str) -> Option<String> {
+        self.outputs.describe(name)
     }
 
     /// Where cues are being sent, for the window to show. Somebody staring at
     /// a corner of a screen for six hours should not have to remember which
     /// machine they pointed this at.
     pub fn output_target(&self) -> Option<String> {
-        self.output.as_ref().map(|sink| sink.target().to_string())
+        let first = self
+            .default_osc
+            .clone()
+            .or_else(|| self.outputs.names().next().map(|name| name.to_string()))?;
+        let described = self.outputs.describe(&first)?;
+        // "OSC to 10.0.0.5:7000" is what a single output is called; with more
+        // than one, say how many so the corner is honest about it.
+        let count = self.outputs.names().count();
+        Some(if count > 1 {
+            format!("{described} +{}", count - 1)
+        } else {
+            described
+        })
     }
 
     /// How long the chaser keeps counting after the signal goes.
@@ -284,9 +397,10 @@ impl Runner {
 
     /// What kind of timecode this is chasing, if anything.
     pub fn source(&self) -> Option<Source> {
-        // An audio input can only ever be carrying LTC. When a MIDI input is
-        // possible this stops being a foregone conclusion.
-        self.capture.as_ref().map(|_| Source::Ltc)
+        // An audio input can only ever be carrying LTC. Anything fed in from
+        // elsewhere says for itself what it is.
+        self.external_source
+            .or_else(|| self.capture.as_ref().map(|_| Source::Ltc))
     }
 
     /// The frame rate in force: pinned by the operator, or measured.
@@ -407,6 +521,7 @@ impl Runner {
             if let Some(tick) = self.chaser.on_frame(&frame) {
                 self.current = Some(tick.timecode);
                 self.last_frame_at = Some(Instant::now());
+                self.tell_the_mtc_clock(tick.timecode);
                 let fired = self.engine.update(tick.timecode, tick.reverse);
                 self.deliver(fired, &mut events);
             }
@@ -434,12 +549,18 @@ impl Runner {
             match self.chaser.on_missing_frame() {
                 Some(tick) => {
                     self.current = Some(tick.timecode);
+                    self.tell_the_mtc_clock(tick.timecode);
                     let fired = self.engine.update(tick.timecode, tick.reverse);
                     self.deliver(fired, &mut events);
                 }
                 None => {
                     if self.current.is_some() {
                         events.push(Event::SignalLost);
+                    }
+                    // Stop the clock rather than let it free-run: a machine
+                    // still receiving MTC believes the show is still going.
+                    if let Some(clock) = &self.mtc {
+                        clock.lost();
                     }
                     self.engine.signal_lost();
                     self.current = None;
@@ -450,13 +571,55 @@ impl Runner {
         events
     }
 
+    /// Take a timecode position that did not come from the sound card.
+    ///
+    /// This is the door MTC will come in through — the brief was always "LTC or
+    /// MTC", and a second source should not mean a second copy of the firing
+    /// rules. Until then it is also how the delivery path is tested without a
+    /// sound card in the machine, which is the only honest way to prove that a
+    /// cue really did reach two different destinations.
+    pub fn accept_timecode(&mut self, at: Timecode, source: Source) -> Vec<Event> {
+        self.external_source = Some(source);
+        self.current = Some(at);
+        self.tell_the_mtc_clock(at);
+        self.last_frame_at = Some(Instant::now());
+        let mut events = Vec::new();
+        let fired = self.engine.update(at, false);
+        self.deliver(fired, &mut events);
+        events
+    }
+
+    fn tell_the_mtc_clock(&self, at: Timecode) {
+        if let Some(clock) = &self.mtc {
+            clock.at(at, self.frame_rate().unwrap_or(25.0));
+        }
+    }
+
+    /// Send everything a fired cue asked for.
+    ///
+    /// Every step is attempted even when an earlier one fails. A dead media
+    /// server must not stop the same cue reaching the desk — half a cue is bad,
+    /// and half a cue that could have been three quarters is worse.
     fn deliver(&mut self, fired: Vec<Firing>, events: &mut Vec<Event>) {
         for firing in fired {
-            let sent = match &mut self.output {
-                Some(sink) => sink
-                    .deliver(&firing.action)
-                    .map_err(|error| error.to_string()),
-                None => Err("no output connected".to_string()),
+            let mut failures = Vec::new();
+            for step in &firing.steps {
+                let step = match (&step.to, &self.default_osc) {
+                    // A step that names nowhere goes to the default, so that a
+                    // second output being added later cannot silently steal it.
+                    (None, Some(default)) if step.send.carried_by() == cue::Carrier::Osc => {
+                        cue::Step::to(default.clone(), step.send.clone())
+                    }
+                    _ => step.clone(),
+                };
+                if let Err(error) = self.outputs.deliver(&step) {
+                    failures.push(error.to_string());
+                }
+            }
+            let sent = if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(failures.join("; "))
             };
             events.push(Event::Fired { firing, sent });
         }
@@ -464,21 +627,21 @@ impl Runner {
 
     /// The flourish to draw for a cue that just went out.
     pub fn flourish_of(firing: &Firing) -> pablo::Flourish {
-        flourish_for(&firing.action)
+        flourish_for(&firing.steps)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cue::{Action, OscArg};
+    use cue::{Message, OscArg};
 
     fn a_cue() -> Cue {
         Cue::new(
             1,
             "test",
             Timecode::new(10, 0, 1, 0),
-            Action::Osc {
+            Message::Osc {
                 address: "/go".into(),
                 args: vec![OscArg::Int(1)],
             },

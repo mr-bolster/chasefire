@@ -12,3 +12,6 @@ authors.workspace = true
 
 [dependencies]
 cue = { path = "../cue" }
+midir = "0.10"
+rtpmidi = { path = "../rtpmidi" }
+ltc = { path = "../ltc" }

@@ -1,6 +1,6 @@
 [package]
-name = "cue"
-description = "Cue table and firing rules: turns incoming timecode into actions"
+name = "rtpmidi"
+description = "RTP-MIDI (AppleMIDI) sessions: MIDI over a network with nothing to install"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,3 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-ltc = { path = "../ltc" }
-serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
-serde_json = "1"

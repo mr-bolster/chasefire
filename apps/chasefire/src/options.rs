@@ -23,15 +23,44 @@ const LABEL: f32 = 118.0;
 const FIELD: f32 = 220.0;
 /// The tick box at the head of a cue row.
 const TICK: f32 = 22.0;
-/// The number that goes out with the address.
-const VALUE: f32 = 66.0;
-/// The remove button at the end of a cue row.
-const REMOVE: f32 = 52.0;
+/// The button that adds another message to a cue.
+const ADD_STEP: f32 = 24.0;
+/// The little button showing an argument's OSC type tag.
+const ARG_TYPE: f32 = 46.0;
+/// The editor for an argument's value.
+const ARG_VALUE: f32 = 58.0;
+/// One of the little add/remove buttons on an argument.
+const ARG_BUTTON: f32 = 20.0;
+/// The destination picker, when there is more than one place to send to.
+const DEST: f32 = 76.0;
+/// What the window spends before the cue table gets a look in: the panel's own
+/// margin on both sides, and the indent the section headings put on their
+/// contents.
+const CHROME: f32 = 100.0;
+/// How tall the settings window opens. Chosen to sit comfortably on the
+/// shortest screen anybody is likely to run a show from.
+const WINDOW_TALL: f32 = 1000.0;
+/// The picker that says what sort of message a line carries.
+const KIND: f32 = 74.0;
+/// The smallest each elastic column may become. Below these a field stops
+/// being clickable, which is worse than a list that has to be scrolled.
+const AT_FLOOR: f32 = 96.0;
+const NAME_FLOOR: f32 = 100.0;
+const ADDRESS_FLOOR: f32 = 140.0;
+/// The little button that takes one message off a cue.
+const DROP_STEP: f32 = 24.0;
+/// The tick that picks a cue out for duplicating or deleting.
+const PICK: f32 = 22.0;
 /// One row of the cue list, near enough, for working out how many fit.
 const CUE_ROW: f32 = 23.0;
 /// The colour a button turns when the next click destroys something.
 const WARNING: egui::Color32 = egui::Color32::from_rgb(150, 62, 40);
-/// How many cues should be visible without scrolling when there is room.
+/// A cue that will fire, and one that will not. Read from an angle, in a hurry,
+/// by somebody who is not going to lean in to count tick marks.
+const LIVE: egui::Color32 = egui::Color32::from_rgb(38, 122, 62);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(132, 46, 42);
+/// How many lines of the cue list are visible without scrolling when there is
+/// room. Lines, not cues: a cue that sends two messages takes two of them.
 const CUES_VISIBLE: f32 = 20.0;
 
 /// Where the money goes. Straight there, one click, no detour through a page
@@ -63,12 +92,85 @@ pub struct Options {
     /// `None` means work the frame rate out from the signal.
     pinned_fps: Option<f64>,
     osc_target: String,
+    /// What the next output added will be called. Cues address outputs by name.
+    osc_name: String,
+    /// What a new RTP-MIDI session will be called, listen on, and invite.
+    rtp_name: String,
+    rtp_port: u16,
+    rtp_peer: String,
+    /// The MIDI ports this machine has, listed once because asking is slow.
+    midi_ports: Vec<String>,
+    ports_listed: bool,
+    midi_port: Option<String>,
+    midi_name: String,
+    /// Which transport's settings are on show.
+    output_tab: Carrier,
+    /// Which cues the list is showing.
+    filter: Filter,
+    /// The empty lines under the list, each one a cue waiting to be typed into.
+    /// Held here rather than in the engine: a line nobody has written in is not
+    /// a cue and has no business being armed or saved.
+    drafts: Vec<cue::Cue>,
+    /// Which cues are ticked, by id rather than by position: the list gets
+    /// edited and reordered underneath, and a selection that follows row
+    /// numbers ends up pointing at the wrong cues.
+    selected: std::collections::HashSet<u32>,
     cue_path: String,
     /// What the next click on that button would destroy, if anything. Set on
     /// the first click and cleared by the second, so a save that overwrites and
     /// a new list that discards are both two deliberate clicks and never one.
     about_to: Option<Danger>,
     message: Option<String>,
+}
+
+/// Which sort of output a panel or a filter is about. Not `cue::Carrier`,
+/// because MIDI down a cable and MIDI over a network are the same messages and
+/// very different things to set up — and to an operator hunting for the reason
+/// nothing is moving, they are two different cables to check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Carrier {
+    Osc,
+    Midi,
+    Network,
+}
+
+impl Carrier {
+    const ALL: [Carrier; 3] = [Carrier::Osc, Carrier::Midi, Carrier::Network];
+
+    fn label(self, words: &'static crate::text::Text) -> &'static str {
+        match self {
+            Carrier::Osc => words.tab_osc,
+            Carrier::Midi => words.tab_midi,
+            Carrier::Network => words.tab_network,
+        }
+    }
+}
+
+/// What the cue list is showing.
+///
+/// **One list, filtered** — not one list per transport. A cue at 10:00:00:00
+/// that starts the video and changes a snapshot on the desk is *one moment in
+/// the show*; kept in two tabs it would be the same timecode written down twice,
+/// and the day one of them moved they would quietly disagree. The tabs choose
+/// what to look at. They do not choose what a cue is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Filter {
+    Everything,
+    Only(Carrier),
+}
+
+impl Filter {
+    fn shows(self, cue: &cue::Cue) -> bool {
+        match self {
+            Filter::Everything => true,
+            Filter::Only(Carrier::Osc) => {
+                cue.carriers().any(|carrier| carrier == cue::Carrier::Osc)
+            }
+            // Until MIDI is built there is nothing to tell the two apart by, so
+            // both MIDI tabs show every MIDI cue rather than pretending to know.
+            Filter::Only(_) => cue.carriers().any(|carrier| carrier == cue::Carrier::Midi),
+        }
+    }
 }
 
 /// Something a click is about to throw away.
@@ -78,6 +180,8 @@ enum Danger {
     Overwrite(String),
     /// Start an empty list, losing the cues currently loaded.
     Discard(usize),
+    /// Throw away the cues that are ticked.
+    DeleteCues(usize),
 }
 
 impl Options {
@@ -95,6 +199,19 @@ impl Options {
             channel: channel.max(1),
             pinned_fps: None,
             osc_target: osc.unwrap_or_else(|| "127.0.0.1:7000".into()),
+            osc_name: String::new(),
+            rtp_name: String::new(),
+            // The port everything in this trade defaults to.
+            rtp_port: 5004,
+            rtp_peer: String::new(),
+            midi_ports: Vec::new(),
+            ports_listed: false,
+            midi_port: None,
+            midi_name: String::new(),
+            output_tab: Carrier::Osc,
+            filter: Filter::Everything,
+            drafts: Vec::new(),
+            selected: std::collections::HashSet::new(),
             cue_path: cues.unwrap_or_else(|| {
                 crate::cuefile::untitled(&crate::cuefile::default_directory(), "cues")
                     .to_string_lossy()
@@ -132,23 +249,32 @@ impl Options {
             .with_title(words.options_title)
             // Tall enough that twenty cues fit without scrolling, and wide
             // enough that an OSC address is readable without dragging it out.
-            .with_inner_size([720.0, 860.0])
-            .with_min_inner_size([540.0, 420.0]);
+            // Wide enough that a cue with a long OSC address and a couple of
+            // arguments reads without dragging anything, and as tall as a
+            // 1080-line screen will take without the bottom going under a
+            // taskbar. The cue list is at the end and scrolls into view; it
+            // shows its full twenty-five lines when it gets there.
+            .with_inner_size([Widths::narrowest(true) + CHROME + 120.0, WINDOW_TALL])
+            // Narrow enough to be dragged out of the way, wide enough that the
+            // cue table still draws every field at a size somebody can click.
+            // Below this the list scrolls sideways rather than shrinking things
+            // past being usable.
+            .with_min_inner_size([Widths::narrowest(true) + CHROME, 420.0]);
 
         let mut still_open = true;
         context.show_viewport_immediate(viewport, builder, |context, _class| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(context.style().as_ref()).inner_margin(MARGIN))
                 .show(context, |ui| {
-                    // Measured here, from the panel itself, and handed down.
-                    // Asking for "the width still available" inside a scroll
-                    // area inside a grid gives an answer that has nothing to do
-                    // with how wide the window is — the same trap that had
-                    // things hanging off the edge of the main window.
-                    let width = ui.max_rect().width();
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        self.contents(ui, runner, presentation, language, width);
-                    });
+                    // Never shrink to fit: a scroll area that sizes itself
+                    // to its content, whose content sizes itself to the scroll
+                    // area, settles wherever it happened to start. The table
+                    // came out two thirds of the window wide and stayed there.
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.contents(ui, runner, presentation, language);
+                        });
                 });
             if context.input(|input| input.viewport().close_requested()) {
                 still_open = false;
@@ -163,12 +289,11 @@ impl Options {
         runner: &mut Runner,
         presentation: &mut Presentation,
         language: &mut crate::text::Language,
-        width: f32,
     ) {
         let words = crate::text::Text::of(*language);
         self.input_section(ui, runner, words);
         self.outputs_section(ui, runner, words);
-        self.cues_section(ui, runner, words, width);
+        self.cues_section(ui, runner, words);
         self.timing_section(ui, runner, words);
         appearance_section(ui, presentation, language, words);
         support_section(ui, words);
@@ -271,16 +396,238 @@ impl Options {
         words: &'static crate::text::Text,
     ) {
         section(ui, words.section_outputs);
-        grid(ui, "outputs", |ui| {
-            label(ui, "OSC");
+
+        // Tabs here, where they belong: MIDI down a cable and MIDI over a
+        // network are the same messages and completely different things to set
+        // up. What is *not* tabbed is the cue list — see `Filter`.
+        ui.horizontal(|ui| {
+            for carrier in Carrier::ALL {
+                ui.selectable_value(&mut self.output_tab, carrier, carrier.label(words));
+            }
+        });
+        ui.add_space(6.0);
+
+        match self.output_tab {
+            Carrier::Osc => self.osc_outputs(ui, runner, words),
+            // Listed rather than hidden. Somebody deciding whether this tool
+            // fits their rig needs to know what it will and will not do, and
+            // finding that out by not finding a setting is a poor way to learn.
+            Carrier::Midi => self.midi_outputs(ui, runner, words),
+            Carrier::Network => self.network_outputs(ui, runner, words),
+        }
+    }
+
+    /// The local MIDI ports.
+    ///
+    /// This is the half of the trade that does not speak OSC at all: a
+    /// grandMA2 takes MIDI Show Control or nothing, and SuperRack recalls
+    /// snapshots on Program Change.
+    fn midi_outputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        if !self.ports_listed {
+            self.ports_listed = true;
+            self.midi_ports = Runner::midi_ports();
+        }
+
+        grid(ui, "midi-outputs", |ui| {
+            label(ui, words.add_output);
             ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.midi_name)
+                        .desired_width(80.0)
+                        .hint_text(words.output_name),
+                );
+                let chosen = self
+                    .midi_port
+                    .clone()
+                    .unwrap_or_else(|| words.no_midi_ports.to_string());
+                egui::ComboBox::from_id_salt("midi-port")
+                    .selected_text(shorten(&chosen, 30))
+                    .width(FIELD - 80.0)
+                    .show_ui(ui, |ui| {
+                        for port in &self.midi_ports {
+                            ui.selectable_value(&mut self.midi_port, Some(port.clone()), port);
+                        }
+                    });
+                if ui.button(words.rescan).clicked() {
+                    self.midi_ports = Runner::midi_ports();
+                    self.message = Some(
+                        words
+                            .ports_found
+                            .replace("{}", &self.midi_ports.len().to_string()),
+                    );
+                }
+                let ready = self.midi_port.is_some();
+                if ui
+                    .add_enabled(ready, egui::Button::new(words.connect))
+                    .clicked()
+                {
+                    let name = if self.midi_name.trim().is_empty() {
+                        "midi".to_string()
+                    } else {
+                        self.midi_name.trim().to_string()
+                    };
+                    let port = self.midi_port.clone().unwrap_or_default();
+                    match runner.connect_midi_as(&name, &port) {
+                        Ok(()) => {
+                            self.message = Some(words.sending_to.replace("{}", &port));
+                            self.midi_name.clear();
+                        }
+                        Err(error) => self.message = Some(error),
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        ui.add_space(6.0);
+
+        // The program's other job. A rig with LTC on a cable and a machine that
+        // only speaks MTC has a hole in it; this fills it, and somebody who
+        // needs only that never has to programme a cue at all.
+        grid(ui, "mtc", |ui| {
+            label(ui, words.mtc);
+            ui.horizontal(|ui| {
+                let running = runner.mtc_port().map(|port| port.to_string());
+                match &running {
+                    Some(port) => {
+                        ui.label(egui::RichText::new(shorten(port, 30)).size(11.0));
+                        if ui.button(words.stop).clicked() {
+                            runner.stop_mtc();
+                            self.message = Some(words.mtc_stopped.into());
+                        }
+                    }
+                    None => {
+                        let ready = self.midi_port.is_some();
+                        // A greyed button with nothing beside it is a dead end:
+                        // it does not say what it wants. Say it.
+                        if !ready {
+                            hint(ui, words.mtc_needs_a_port);
+                        }
+                        if ui
+                            .add_enabled(ready, egui::Button::new(words.mtc_send))
+                            .clicked()
+                        {
+                            let port = self.midi_port.clone().unwrap_or_default();
+                            match runner.start_mtc(&port) {
+                                Ok(()) => {
+                                    self.message = Some(words.mtc_sending.replace("{}", &port))
+                                }
+                                Err(error) => self.message = Some(error),
+                            }
+                        }
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        ui.add_space(2.0);
+        hint(ui, words.mtc_note);
+        ui.add_space(2.0);
+        if self.midi_ports.is_empty() {
+            hint(ui, words.no_midi_ports_hint);
+        } else {
+            hint(ui, words.midi_note);
+        }
+    }
+
+    /// RTP-MIDI sessions.
+    ///
+    /// Nothing to install and no virtual cable: a Mac has this in Audio MIDI
+    /// Setup, an iPad has it, Companion speaks it, and on Windows it is what
+    /// rtpMIDI provides. Which end invites is not ours to choose, so both are
+    /// offered — leave the address empty and it waits to be invited.
+    fn network_outputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        grid(ui, "rtp-outputs", |ui| {
+            label(ui, words.add_output);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.rtp_name)
+                        .desired_width(80.0)
+                        .hint_text(words.output_name),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.rtp_port)
+                        .range(1024..=65534)
+                        .prefix(words.rtp_port_prefix),
+                )
+                .on_hover_text(words.rtp_port_tooltip);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.rtp_peer)
+                        .desired_width(FIELD - 90.0)
+                        .hint_text(words.rtp_peer_hint),
+                );
+                if ui.button(words.connect).clicked() {
+                    let name = if self.rtp_name.trim().is_empty() {
+                        "red".to_string()
+                    } else {
+                        self.rtp_name.trim().to_string()
+                    };
+                    match runner.connect_network_midi_as(
+                        &name,
+                        self.rtp_port,
+                        Some(self.rtp_peer.as_str()),
+                    ) {
+                        Ok(()) => {
+                            self.message = Some(if self.rtp_peer.trim().is_empty() {
+                                words.rtp_waiting.replace("{}", &self.rtp_port.to_string())
+                            } else {
+                                words.sending_to.replace("{}", self.rtp_peer.trim())
+                            });
+                            self.rtp_name.clear();
+                        }
+                        Err(error) => self.message = Some(error),
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        ui.add_space(2.0);
+        hint(ui, words.rtp_note);
+        ui.add_space(2.0);
+        hint(ui, words.rtp_no_journal);
+    }
+
+    /// The OSC destinations, by name.
+    ///
+    /// A show is not one machine. The video server, the desk and the lighting
+    /// console are three addresses, and a cue names which one it means — so
+    /// this is a list rather than a box.
+    fn osc_outputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        runner: &mut Runner,
+        words: &'static crate::text::Text,
+    ) {
+        grid(ui, "osc-outputs", |ui| {
+            label(ui, words.add_output);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.osc_name)
+                        .desired_width(80.0)
+                        .hint_text(words.output_name),
+                );
                 ui.add(
                     egui::TextEdit::singleline(&mut self.osc_target).desired_width(FIELD - 80.0),
                 );
                 if ui.button(words.connect).clicked() {
-                    match runner.connect_osc(&self.osc_target) {
+                    let name = if self.osc_name.trim().is_empty() {
+                        "osc".to_string()
+                    } else {
+                        self.osc_name.trim().to_string()
+                    };
+                    match runner.connect_osc_as(&name, &self.osc_target) {
                         Ok(()) => {
-                            self.message = Some(words.sending_to.replace("{}", &self.osc_target))
+                            self.message = Some(words.sending_to.replace("{}", &self.osc_target));
+                            self.osc_name.clear();
                         }
                         Err(error) => self.message = Some(error),
                     }
@@ -288,32 +635,29 @@ impl Options {
             });
             ui.end_row();
 
-            // The other two are listed rather than hidden. Somebody deciding
-            // whether this tool fits their rig needs to know what it will and
-            // will not do, and finding that out by not finding a setting is a
-            // poor way to learn it.
-            label(ui, "MIDI");
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(false, |ui| {
-                    let mut empty = String::from(words.no_port);
-                    ui.add(egui::TextEdit::singleline(&mut empty).desired_width(FIELD - 80.0));
+            for name in runner.output_names() {
+                label(ui, "");
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{name} — {}",
+                            runner.output_described(&name).unwrap_or_default()
+                        ))
+                        .size(11.0),
+                    );
+                    if ui.small_button(words.remove).clicked() {
+                        runner.disconnect_output(&name);
+                    }
                 });
-                hint(ui, words.not_built_yet);
-            });
-            ui.end_row();
-
-            label(ui, "MIDI over network");
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(false, |ui| {
-                    let mut empty = String::from(words.no_session);
-                    ui.add(egui::TextEdit::singleline(&mut empty).desired_width(FIELD - 80.0));
-                });
-                hint(ui, words.not_built_yet);
-            });
-            ui.end_row();
+                ui.end_row();
+            }
         });
         ui.add_space(2.0);
-        hint(ui, words.rtp_note);
+        if runner.output_names().is_empty() {
+            hint(ui, words.no_outputs);
+        } else {
+            hint(ui, words.outputs_hint);
+        }
     }
 
     fn cues_section(
@@ -321,7 +665,6 @@ impl Options {
         ui: &mut egui::Ui,
         runner: &mut Runner,
         words: &'static crate::text::Text,
-        width: f32,
     ) {
         section(ui, words.section_cues);
         grid(ui, "cuefile", |ui| {
@@ -380,8 +723,30 @@ impl Options {
         ui.add_space(2.0);
         hint(ui, words.save_as_hint);
 
+        ui.add_space(6.0);
+        // One list, filtered — never one list per transport. A cue that starts
+        // the video and moves the desk is one moment in the show; split across
+        // tabs it would be the same timecode written twice, and the day one of
+        // them moved they would quietly disagree.
+        ui.horizontal(|ui| {
+            let all = runner.cues().len();
+            ui.selectable_value(
+                &mut self.filter,
+                Filter::Everything,
+                format!("{} {all}", words.filter_all),
+            );
+            for carrier in Carrier::ALL {
+                let filter = Filter::Only(carrier);
+                let count = runner.cues().iter().filter(|cue| filter.shows(cue)).count();
+                ui.selectable_value(
+                    &mut self.filter,
+                    filter,
+                    format!("{} {count}", carrier.label(words)),
+                );
+            }
+        });
         ui.add_space(4.0);
-        self.cue_table(ui, runner, words, width);
+        self.cue_table(ui, runner, words);
     }
 
     /// The cue list, editable in place.
@@ -394,29 +759,44 @@ impl Options {
         ui: &mut egui::Ui,
         runner: &mut Runner,
         words: &'static crate::text::Text,
-        width: f32,
     ) {
         let mut cues = runner.cues().to_vec();
         let mut changed = false;
-        let mut remove = None;
+        let mut remove_cue: Option<usize> = None;
+        let mut remove_step: Option<(usize, usize)> = None;
+        // Measured **here**, where the rows are actually drawn, not up at the
+        // panel: the section indents its contents, and handing the table the
+        // panel's width made every row that much too wide for the window. The
+        // last button of each line was sitting off the edge.
+        let width = ui.max_rect().width();
+        let outputs = runner.output_names();
+        // The destination column only exists once there is a choice to make. A
+        // show with one machine should never have to learn that outputs have
+        // names at all.
+        let show_destination = outputs.len() > 1;
 
-        // Every text field grows with the window, each with a floor below which
-        // it stops being usable. The timecode needs the least — it is always
-        // eleven characters — but cramming it into exactly eleven characters
-        // makes it fiddly to click into, so it gets a share too.
-        // What the row spends on things that never change size: the tick, the
-        // value, the remove button, and the five gaps between the six of them.
-        let fixed = TICK + VALUE + REMOVE + GAP * 5.0;
-        let flexible = (width - fixed - 20.0).max(280.0);
-        let at_width = (flexible * 0.14).max(96.0);
-        let name_width = (flexible * 0.30).max(110.0);
-        let address_width = (flexible - at_width - name_width).max(150.0);
+        let filter = self.filter;
+        let widths = Widths::for_a_window(width, show_destination);
+        let Widths {
+            at: at_width,
+            name: name_width,
+            address: address_width,
+            args: args_width,
+        } = widths;
 
         if cues.is_empty() {
             hint(ui, words.no_cues_yet);
         } else {
-            egui::ScrollArea::vertical()
+            egui::ScrollArea::both()
                 .max_height(CUE_ROW * CUES_VISIBLE)
+                .min_scrolled_height(CUE_ROW * CUES_VISIBLE)
+                // Always twenty lines tall, whether there are two cues or
+                // two hundred. A box that grows as cues are added moves every
+                // button under it while somebody is working, and a short list
+                // gives nowhere to drop the next one. What is below stays
+                // reachable: the window opens tall enough to show that there
+                // is more under it.
+                .auto_shrink([false, false])
                 .id_salt("cuelist")
                 .show(ui, |ui| {
                     // Laid out by hand rather than with a Grid, and not for
@@ -428,70 +808,91 @@ impl Options {
                     // Rows of our own break the loop: each one is told its
                     // widths outright.
                     row(ui, |ui| {
+                        heading(ui, words.column_pick, PICK);
                         heading(ui, words.column_on, TICK);
                         heading(ui, words.column_at, at_width);
                         heading(ui, words.column_name, name_width);
+                        if show_destination {
+                            heading(ui, words.column_to, DEST);
+                        }
                         heading(ui, words.column_sends, address_width);
-                        heading(ui, words.column_value, VALUE).on_hover_text(words.value_tooltip);
+                        heading(ui, words.column_args, args_width)
+                            .on_hover_text(words.args_tooltip);
                     });
 
+                    let mut lines = 0usize;
                     for (index, cue) in cues.iter_mut().enumerate() {
-                        // Alternating bands, painted behind the row. Reserved
-                        // before the row is drawn and filled in after, once its
-                        // real height is known — twenty near-identical lines of
-                        // timecode are hard to follow otherwise.
-                        let band = ui.painter().add(egui::Shape::Noop);
-                        let response = row(ui, |ui| {
-                            changed |= ui
-                                .add_sized(
-                                    [TICK, CUE_ROW],
-                                    egui::Checkbox::without_text(&mut cue.enabled),
-                                )
-                                .changed();
-
-                            // Typed the way the trade writes it, and only
-                            // accepted once it is actually a timecode: a
-                            // half-typed one must not move a cue to midnight.
-                            let mut text = cue.at.to_string();
-                            let edited = ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut text)
-                                        .desired_width(at_width)
-                                        .font(egui::TextStyle::Monospace),
-                                )
-                                .on_hover_text(words.at_tooltip)
-                                .changed();
-                            if edited {
-                                if let Some(parsed) = parse_timecode(&text) {
-                                    cue.at = parsed;
-                                    changed = true;
-                                }
-                            }
-
-                            changed |= ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut cue.name)
-                                        .desired_width(name_width),
-                                )
-                                .changed();
-
-                            changed |= action_editor(ui, &mut cue.action, words, address_width);
-
-                            if ui.small_button(words.remove).clicked() {
-                                remove = Some(index);
-                            }
-                        });
-
-                        if index % 2 == 1 {
-                            let stripe = ui.visuals().faint_bg_color;
-                            ui.painter().set(
-                                band,
-                                egui::Shape::rect_filled(response.response.rect, 2.0, stripe),
-                            );
+                        // The row number is the real one whatever is on show:
+                        // duplicating and deleting work on the list, not on
+                        // what happens to be visible.
+                        if !filter.shows(cue) {
+                            continue;
                         }
+                        let outcome = cue_block(
+                            ui,
+                            cue,
+                            &mut self.selected,
+                            &outputs,
+                            show_destination,
+                            words,
+                            &widths,
+                            lines % 2 == 1,
+                            false,
+                        );
+                        changed |= outcome.changed;
+                        if outcome.remove_cue {
+                            remove_cue = Some(index);
+                        }
+                        if let Some(step) = outcome.remove_step {
+                            remove_step = Some((index, step));
+                        }
+                        lines += cue.steps.len();
+                    }
+
+                    // The rest of the box is real rows too, not ruling. Type a
+                    // time or a name into one and the cue exists — which is how
+                    // anybody who has used a spreadsheet expects a list to
+                    // behave, and it saves reaching for a button to make each
+                    // one.
+                    let spare = (CUES_VISIBLE as usize).saturating_sub(lines);
+                    while self.drafts.len() < spare {
+                        self.drafts.push(blank_cue());
+                    }
+                    let mut born = None;
+                    for slot in 0..spare {
+                        let outcome = cue_block(
+                            ui,
+                            &mut self.drafts[slot],
+                            &mut self.selected,
+                            &outputs,
+                            show_destination,
+                            words,
+                            &widths,
+                            (lines + slot) % 2 == 1,
+                            true,
+                        );
+                        if outcome.changed && has_something_in_it(&self.drafts[slot]) {
+                            born = Some(slot);
+                        }
+                    }
+                    if let Some(slot) = born {
+                        let mut fresh = self.drafts.remove(slot);
+                        fresh.id = cues.iter().map(|cue| cue.id).max().unwrap_or(0) + 1;
+                        if fresh.name.trim().is_empty() {
+                            fresh.name = words.unnamed_cue.replace("{}", &fresh.id.to_string());
+                        }
+                        cues.push(fresh);
+                        self.drafts.insert(slot, blank_cue());
+                        changed = true;
                     }
                 });
         }
+
+        // The legend is on the screen rather than only in a tooltip. A hover
+        // that has to be discovered is no help to somebody who does not yet
+        // know there is anything to discover.
+        ui.add_space(3.0);
+        hint(ui, words.arg_types);
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -501,13 +902,94 @@ impl Options {
                     next,
                     format!("cue {next}"),
                     ltc::Timecode::new(10, 0, 0, 0),
-                    cue::Action::Osc {
+                    cue::Message::Osc {
                         address: "/composition/columns/1/connect".into(),
                         args: vec![cue::OscArg::Int(1)],
                     },
                 ));
                 changed = true;
             }
+
+            // A working cue for whatever machine this is pointed at. Not
+            // magic and not hidden: it writes one ordinary cue that can then
+            // be edited like any other. What it saves is the half hour of
+            // reading a manual to find out that QLab wants no arguments.
+            egui::ComboBox::from_id_salt("preset")
+                .selected_text(words.from_a_preset)
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for preset in crate::presets::ALL {
+                        let mut label = egui::RichText::new(preset.name);
+                        if preset.port_unconfirmed {
+                            label = label.italics();
+                        }
+                        if ui
+                            .selectable_label(false, label)
+                            .on_hover_text(if preset.port_unconfirmed {
+                                format!("{} — {}", preset.note, words.port_unconfirmed)
+                            } else {
+                                preset.note.to_string()
+                            })
+                            .clicked()
+                        {
+                            let next = cues.iter().map(|cue| cue.id).max().unwrap_or(0) + 1;
+                            cues.push(preset.cue(next));
+                            if let Some(target) = preset.suggested_target() {
+                                self.osc_target = target;
+                                self.osc_name = preset.name.to_lowercase();
+                            }
+                            self.message = Some(words.preset_added.replace("{}", preset.name));
+                            changed = true;
+                        }
+                    }
+                });
+
+            // What the ticks are for. Both buttons say how many they would
+            // take, so nobody has to count ticks before pressing one.
+            let picked: Vec<usize> = cues
+                .iter()
+                .enumerate()
+                .filter(|(_, cue)| self.selected.contains(&cue.id))
+                .map(|(index, _)| index)
+                .collect();
+            let any = !picked.is_empty();
+
+            let duplicate = egui::Button::new(if any {
+                words.duplicate.replace("{}", &picked.len().to_string())
+            } else {
+                words.duplicate_none.to_string()
+            });
+            if ui
+                .add_enabled(any, duplicate)
+                .on_hover_text(words.duplicate_tooltip)
+                .clicked()
+            {
+                duplicate_picked(&mut cues, &picked, words.copy_suffix);
+                changed = true;
+            }
+
+            let asking_delete = matches!(self.about_to, Some(Danger::DeleteCues(_)));
+            let mut delete = egui::Button::new(if asking_delete {
+                words.delete_sure.replace("{}", &picked.len().to_string())
+            } else if any {
+                words.delete_picked.replace("{}", &picked.len().to_string())
+            } else {
+                words.delete_none.to_string()
+            });
+            if asking_delete {
+                delete = delete.fill(WARNING);
+            }
+            if ui.add_enabled(any, delete).clicked() {
+                if asking_delete {
+                    self.about_to = None;
+                    cues.retain(|cue| !self.selected.contains(&cue.id));
+                    self.selected.clear();
+                    changed = true;
+                } else {
+                    self.about_to = Some(Danger::DeleteCues(picked.len()));
+                }
+            }
+
             let asking = self.about_to == Some(Danger::Overwrite(self.cue_path.clone()));
             let label = if asking {
                 words
@@ -544,9 +1026,14 @@ impl Options {
             }
         });
 
-        if let Some(index) = remove {
-            cues.remove(index);
-            changed = true;
+        if let Some((cue_index, step_index)) = remove_step {
+            // The last message of a cue is not removable: a cue that sends
+            // nothing is a line in the list that looks armed and does nothing
+            // when its moment comes. Remove the cue instead.
+            if cues[cue_index].steps.len() > 1 {
+                cues[cue_index].steps.remove(step_index);
+                changed = true;
+            }
         }
         if changed {
             runner.set_cues(cues);
@@ -749,52 +1236,678 @@ fn shorten(text: &str, room: usize) -> String {
     format!("…{tail}")
 }
 
-/// One line of the cue list. Nothing between the widgets but the gaps we put
-/// there ourselves: egui adds its own spacing on top of anything we allocate,
-/// which is how rows end up a few pixels wider than the window every time.
+/// How wide each elastic column of the cue table is, for a given window.
+///
+/// Worked out in one place and by arithmetic alone, so it can be checked
+/// without opening a window — and so that "the row is too wide" is a test
+/// failure rather than something spotted in a screenshot.
+pub struct Widths {
+    pub at: f32,
+    pub name: f32,
+    pub address: f32,
+    pub args: f32,
+}
+
+impl Widths {
+    /// What the row spends on things that never change size: the tick, the two
+    /// buttons at the end, the destination picker when there is one, and the
+    /// gaps between all of it.
+    fn fixed(show_destination: bool) -> f32 {
+        let destination = if show_destination { DEST + GAP } else { 0.0 };
+        PICK + TICK + KIND + ADD_STEP + DROP_STEP + destination + GAP * 7.0
+    }
+
+    /// The narrowest the table can be drawn with every field still usable.
+    /// Below this it scrolls sideways rather than shrinking things past the
+    /// point of being clickable — a timecode box too small to click into is
+    /// worse than a row that has to be scrolled.
+    pub fn narrowest(show_destination: bool) -> f32 {
+        Self::fixed(show_destination) + Self::floors()
+    }
+
+    fn floors() -> f32 {
+        AT_FLOOR + NAME_FLOOR + ADDRESS_FLOOR + Self::args_floor()
+    }
+
+    fn args_floor() -> f32 {
+        ARG_TYPE + ARG_VALUE + ARG_BUTTON * 2.0 + 6.0
+    }
+
+    pub fn for_a_window(width: f32, show_destination: bool) -> Self {
+        // Floors first, then share out whatever is left over. Taking shares
+        // first and clamping afterwards looks equivalent and is not: one column
+        // can sit above its floor while another is pinned to it, and the total
+        // then comes out wider than the row it has to fit in. That is exactly
+        // how the last button ended up off the edge of the window.
+        let flexible = width - Self::fixed(show_destination);
+        let spare = (flexible - Self::floors()).max(0.0);
+        Self {
+            at: AT_FLOOR + spare * 0.13,
+            name: NAME_FLOOR + spare * 0.22,
+            args: Self::args_floor() + spare * 0.30,
+            address: ADDRESS_FLOOR + spare * 0.35,
+        }
+    }
+
+    /// Everything a row of the table occupies, gaps included — the same sum the
+    /// drawing code makes, for the test that says a row never sticks out.
+    #[cfg(test)]
+    pub fn whole_row(&self, show_destination: bool) -> f32 {
+        Self::fixed(show_destination) + self.at + self.name + self.address + self.args
+    }
+}
+
+/// Copy the ticked cues, each one landing right after the cue it came from.
+///
+/// Walked backwards on purpose. Done forwards, every insertion shifts the
+/// positions still to be visited and the wrong cues get copied — with two
+/// ticks it copies the first one twice.
+fn duplicate_picked(cues: &mut Vec<cue::Cue>, picked: &[usize], suffix: &str) {
+    let mut next = cues.iter().map(|cue| cue.id).max().unwrap_or(0);
+    for index in picked.iter().rev() {
+        next += 1;
+        let mut copy = cues[*index].clone();
+        copy.id = next;
+        copy.name = format!("{} {}", copy.name, suffix);
+        // The copy arrives switched off. It lands at the same timecode as the
+        // cue it came from, and two cues firing at the same instant is almost
+        // never what somebody meant — better a red tick to turn on than a
+        // surprise on the night.
+        copy.enabled = false;
+        cues.insert(index + 1, copy);
+    }
+}
+
+/// One line of the cue list.
+///
+/// Spacing is zero and every gap is put there by hand, because egui adds its
+/// own on top of anything allocated — which is how rows end up wider than the
+/// window, and how the second line of a two-message cue ends up a few pixels
+/// out of step with the first.
 fn row<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = GAP;
+        ui.spacing_mut().item_spacing.x = 0.0;
         contents(ui)
     })
 }
 
+/// A cell of a cue row: **exactly** this wide, whatever it decides to put in
+/// it. Without this a step with one argument advances the cursor less than a
+/// step with two, and the buttons at the end of the line stop lining up.
+fn cell<R>(ui: &mut egui::Ui, width: f32, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(width, CUE_ROW - 4.0),
+        egui::Sense::focusable_noninteractive(),
+    );
+    let mut inside = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    inside.spacing_mut().item_spacing.x = 2.0;
+    contents(&mut inside)
+}
+
+fn gap(ui: &mut egui::Ui) {
+    ui.add_space(GAP);
+}
+
 /// A column heading, sitting over the field it names.
 fn heading(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
-    ui.add_sized(
+    let response = ui.add_sized(
         [width, 14.0],
         egui::Label::new(egui::RichText::new(text).size(11.0).weak()).halign(egui::Align::LEFT),
+    );
+    gap(ui);
+    response
+}
+
+/// What a row asked for, on the way back out.
+#[derive(Default)]
+struct RowOutcome {
+    changed: bool,
+    remove_cue: bool,
+    remove_step: Option<usize>,
+}
+
+/// One cue and all its messages, drawn.
+///
+/// The same code draws a cue and an empty line waiting to become one. That is
+/// the point: a blank row that merely *looks* like the real thing drifts away
+/// from it the first time either changes, and then somebody types into
+/// something that turns out to be a picture.
+#[allow(clippy::too_many_arguments)]
+fn cue_block(
+    ui: &mut egui::Ui,
+    cue: &mut cue::Cue,
+    selected: &mut std::collections::HashSet<u32>,
+    outputs: &[String],
+    show_destination: bool,
+    words: &'static crate::text::Text,
+    widths: &Widths,
+    striped: bool,
+    blank: bool,
+) -> RowOutcome {
+    let mut outcome = RowOutcome::default();
+
+    // Alternating bands, painted behind the whole cue — every one of its
+    // messages, not just the first line. Reserved before the block is drawn and
+    // filled in after, once its real height is known.
+    let band = ui.painter().add(egui::Shape::Noop);
+    let block = ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let steps = cue.steps.len();
+        for step_index in 0..steps {
+            let first = step_index == 0;
+            row(ui, |ui| {
+                // The later messages of a cue line up under the first with
+                // nothing repeated: they all happen at one moment, and the
+                // moment is written once. The columns are still allocated, so
+                // everything stays in step.
+                cell(ui, PICK, |ui| {
+                    if !first || blank {
+                        return;
+                    }
+                    let mut picked = selected.contains(&cue.id);
+                    if ui
+                        .checkbox(&mut picked, "")
+                        .on_hover_text(words.pick_tooltip)
+                        .changed()
+                    {
+                        if picked {
+                            selected.insert(cue.id);
+                        } else {
+                            selected.remove(&cue.id);
+                        }
+                    }
+                });
+                gap(ui);
+
+                cell(ui, TICK, |ui| {
+                    if !first {
+                        return;
+                    }
+                    // Green for armed, red for not. A cue list gets read in a
+                    // hurry and from an angle, and whether a line will fire is
+                    // the one thing that has to be legible without leaning in.
+                    //
+                    // A line that is not a cue yet gets neither colour. Green
+                    // on an empty line would be saying it is going to fire,
+                    // and it is not going to do anything at all.
+                    if !blank {
+                        let colour = if cue.enabled { LIVE } else { MUTED };
+                        let widgets = &mut ui.visuals_mut().widgets;
+                        for widget in [
+                            &mut widgets.inactive,
+                            &mut widgets.hovered,
+                            &mut widgets.active,
+                        ] {
+                            widget.bg_fill = colour;
+                            widget.weak_bg_fill = colour;
+                        }
+                    }
+                    outcome.changed |= ui
+                        .checkbox(&mut cue.enabled, "")
+                        .on_hover_text(if cue.enabled {
+                            words.enabled_tooltip
+                        } else {
+                            words.disabled_tooltip
+                        })
+                        .changed();
+                });
+                gap(ui);
+
+                cell(ui, widths.at, |ui| {
+                    if !first {
+                        return;
+                    }
+                    // Typed the way the trade writes it, and only accepted once
+                    // it is actually a timecode: a half-typed one must not move
+                    // a cue to midnight.
+                    let mut text = cue.at.to_string();
+                    let edited = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut text)
+                                .desired_width(widths.at)
+                                .font(egui::TextStyle::Monospace),
+                        )
+                        .on_hover_text(words.at_tooltip)
+                        .changed();
+                    if edited {
+                        if let Some(parsed) = parse_timecode(&text) {
+                            cue.at = parsed;
+                            outcome.changed = true;
+                        }
+                    }
+                });
+                gap(ui);
+
+                cell(ui, widths.name, |ui| {
+                    if first {
+                        outcome.changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut cue.name)
+                                    .desired_width(widths.name),
+                            )
+                            .changed();
+                    }
+                });
+                gap(ui);
+
+                outcome.changed |= step_editor(
+                    ui,
+                    &mut cue.steps[step_index],
+                    outputs,
+                    show_destination,
+                    words,
+                    widths.address,
+                    widths.args,
+                );
+
+                // One more message at this same moment, and take one away.
+                // A line that is not a cue yet has neither: there is nothing
+                // to add to.
+                cell(ui, ADD_STEP, |ui| {
+                    if !first || blank {
+                        return;
+                    }
+                    if ui
+                        .add_sized(ui.available_size(), egui::Button::new("+"))
+                        .on_hover_text(words.add_message)
+                        .clicked()
+                    {
+                        cue.steps.push(cue::Step::anywhere(cue::Message::Osc {
+                            address: String::new(),
+                            args: Vec::new(),
+                        }));
+                        outcome.changed = true;
+                    }
+                });
+                gap(ui);
+
+                cell(ui, DROP_STEP, |ui| {
+                    if steps < 2 || blank {
+                        return;
+                    }
+                    if ui
+                        .add_sized(ui.available_size(), egui::Button::new("−"))
+                        .on_hover_text(words.remove_message)
+                        .clicked()
+                    {
+                        outcome.remove_step = Some(step_index);
+                    }
+                });
+            });
+        }
+    });
+
+    if striped {
+        let stripe = ui.visuals().faint_bg_color;
+        ui.painter().set(
+            band,
+            egui::Shape::rect_filled(block.response.rect, 2.0, stripe),
+        );
+    }
+    outcome
+}
+
+/// An empty line, waiting to be typed into.
+fn blank_cue() -> cue::Cue {
+    cue::Cue::new(
+        0,
+        String::new(),
+        ltc::Timecode::new(0, 0, 0, 0),
+        cue::Message::Osc {
+            address: String::new(),
+            args: Vec::new(),
+        },
     )
 }
 
-/// Edit whatever a cue does. Only OSC exists so far, so this is one row; when
-/// MIDI arrives it becomes a choice of kind and then its own fields.
-fn action_editor(
+/// Has somebody actually put something in this line?
+///
+/// A tick is not enough: reaching for one and changing your mind should not
+/// leave a cue behind at midnight.
+fn has_something_in_it(cue: &cue::Cue) -> bool {
+    if !cue.name.trim().is_empty() {
+        return true;
+    }
+    if cue.at != ltc::Timecode::new(0, 0, 0, 0) {
+        return true;
+    }
+    cue.steps.iter().any(|step| match &step.send {
+        cue::Message::Osc { address, args } => !address.trim().is_empty() || !args.is_empty(),
+        // Any other kind had to be chosen deliberately.
+        _ => true,
+    })
+}
+
+/// Edit one message of a cue: where it goes, what it says, what it carries.
+fn step_editor(
     ui: &mut egui::Ui,
-    action: &mut cue::Action,
+    step: &mut cue::Step,
+    outputs: &[String],
+    show_destination: bool,
     words: &'static crate::text::Text,
-    width: f32,
+    address_width: f32,
+    args_width: f32,
 ) -> bool {
-    match action {
-        cue::Action::Osc { address, args } => {
-            // Drawn straight into the row it was called from, not in a
-            // horizontal of its own: a nested one brings its own spacing and
-            // the value stops lining up with the heading above it.
-            let mut changed = ui
-                .add(egui::TextEdit::singleline(address).desired_width(width))
-                .changed();
-            if let Some(cue::OscArg::Int(value)) = args.first_mut() {
+    let mut changed = false;
+
+    if show_destination {
+        cell(ui, DEST, |ui| {
+            let chosen = step
+                .to
+                .clone()
+                .unwrap_or_else(|| words.default_output.to_string());
+            egui::ComboBox::from_id_salt(ui.next_auto_id())
+                .selected_text(egui::RichText::new(shorten(&chosen, 9)).size(11.0))
+                .width(DEST)
+                .show_ui(ui, |ui| {
+                    changed |= ui
+                        .selectable_value(&mut step.to, None, words.default_output)
+                        .changed();
+                    for name in outputs {
+                        changed |= ui
+                            .selectable_value(&mut step.to, Some(name.clone()), name)
+                            .changed();
+                    }
+                });
+        });
+        gap(ui);
+    }
+
+    // What sort of message this is. A cue list mixes them freely — the moment
+    // that starts the video also changes a snapshot on the desk — so the kind
+    // belongs on the line, not in a mode somewhere else.
+    cell(ui, KIND, |ui| {
+        let mut kind = Kind::of(&step.send);
+        egui::ComboBox::from_id_salt(ui.next_auto_id())
+            .selected_text(egui::RichText::new(kind.label(words)).size(11.0))
+            .width(KIND)
+            .show_ui(ui, |ui| {
+                for option in Kind::ALL {
+                    ui.selectable_value(&mut kind, option, option.label(words));
+                }
+            });
+        if kind != Kind::of(&step.send) {
+            step.send = kind.blank();
+            changed = true;
+        }
+    });
+    gap(ui);
+
+    let room = address_width + args_width + GAP;
+    match &mut step.send {
+        cue::Message::Osc { address, args } => {
+            cell(ui, address_width, |ui| {
                 changed |= ui
-                    .add_sized([VALUE, CUE_ROW - 5.0], egui::DragValue::new(value))
-                    .on_hover_text(words.value_tooltip)
+                    .add(egui::TextEdit::singleline(address).desired_width(address_width))
+                    .changed();
+            });
+            gap(ui);
+            cell(ui, args_width, |ui| {
+                changed |= args_editor(ui, args, words);
+            });
+            gap(ui);
+        }
+        cue::Message::MidiNote {
+            channel,
+            note,
+            velocity,
+        } => {
+            cell(ui, room, |ui| {
+                changed |= number(ui, words.midi_channel, channel, 1..=16);
+                changed |= number(ui, words.midi_note_number, note, 0..=127);
+                changed |= number(ui, words.midi_velocity, velocity, 0..=127);
+            });
+            gap(ui);
+        }
+        cue::Message::MidiProgramChange {
+            channel,
+            program,
+            bank,
+        } => {
+            cell(ui, room, |ui| {
+                changed |= number(ui, words.midi_channel, channel, 1..=16);
+                changed |= number(ui, words.midi_program, program, 0..=127);
+                // The bank is what reaches SuperRack snapshots past 128.
+                let mut banked = bank.is_some();
+                if ui
+                    .checkbox(&mut banked, egui::RichText::new(words.midi_bank).size(11.0))
+                    .on_hover_text(words.midi_bank_tooltip)
+                    .changed()
+                {
+                    *bank = banked.then_some((0, 0));
+                    changed = true;
+                }
+                if let Some((msb, lsb)) = bank {
+                    changed |= number(ui, "MSB", msb, 0..=127);
+                    changed |= number(ui, "LSB", lsb, 0..=127);
+                }
+            });
+            gap(ui);
+        }
+        cue::Message::MidiControlChange {
+            channel,
+            controller,
+            value,
+        } => {
+            cell(ui, room, |ui| {
+                changed |= number(ui, words.midi_channel, channel, 1..=16);
+                changed |= number(ui, words.midi_controller, controller, 0..=127);
+                changed |= number(ui, words.midi_value, value, 0..=127);
+            });
+            gap(ui);
+        }
+        cue::Message::ShowControl(msc) => {
+            cell(ui, room, |ui| {
+                egui::ComboBox::from_id_salt(ui.next_auto_id())
+                    .selected_text(egui::RichText::new(msc.command.name()).size(11.0))
+                    .width(74.0)
+                    .show_ui(ui, |ui| {
+                        for option in cue::ShowCommand::ALL {
+                            changed |= ui
+                                .selectable_value(&mut msc.command, option, option.name())
+                                .changed();
+                        }
+                    });
+                ui.label(egui::RichText::new(words.msc_cue).size(11.0));
+                changed |= ui
+                    .add(egui::TextEdit::singleline(&mut msc.cue).desired_width(52.0))
+                    .on_hover_text(words.msc_cue_tooltip)
+                    .changed();
+                changed |= number(ui, words.msc_device, &mut msc.device, 0..=127);
+            });
+            gap(ui);
+        }
+    }
+
+    changed
+}
+
+/// Which sort of message a step carries, as a thing you can pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Osc,
+    Note,
+    Program,
+    Control,
+    ShowControl,
+}
+
+impl Kind {
+    const ALL: [Kind; 5] = [
+        Kind::Osc,
+        Kind::Note,
+        Kind::Program,
+        Kind::Control,
+        Kind::ShowControl,
+    ];
+
+    fn of(message: &cue::Message) -> Self {
+        match message {
+            cue::Message::Osc { .. } => Kind::Osc,
+            cue::Message::MidiNote { .. } => Kind::Note,
+            cue::Message::MidiProgramChange { .. } => Kind::Program,
+            cue::Message::MidiControlChange { .. } => Kind::Control,
+            cue::Message::ShowControl(_) => Kind::ShowControl,
+        }
+    }
+
+    fn label(self, words: &'static crate::text::Text) -> &'static str {
+        match self {
+            Kind::Osc => "OSC",
+            Kind::Note => words.kind_note,
+            Kind::Program => words.kind_program,
+            Kind::Control => words.kind_control,
+            Kind::ShowControl => "MSC",
+        }
+    }
+
+    /// A message of this kind with settings that do something harmless.
+    fn blank(self) -> cue::Message {
+        match self {
+            Kind::Osc => cue::Message::Osc {
+                address: String::new(),
+                args: Vec::new(),
+            },
+            Kind::Note => cue::Message::MidiNote {
+                channel: 1,
+                note: 60,
+                velocity: 127,
+            },
+            Kind::Program => cue::Message::MidiProgramChange {
+                channel: 1,
+                program: 0,
+                bank: None,
+            },
+            Kind::Control => cue::Message::MidiControlChange {
+                channel: 1,
+                controller: 1,
+                value: 0,
+            },
+            Kind::ShowControl => cue::Message::ShowControl(cue::ShowControl::default()),
+        }
+    }
+}
+
+/// A small labelled number, of the sort MIDI is made of.
+fn number(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut u8,
+    range: std::ops::RangeInclusive<u8>,
+) -> bool {
+    ui.label(egui::RichText::new(label).size(11.0).weak());
+    ui.add(egui::DragValue::new(value).range(range)).changed()
+}
+
+/// The arguments that ride along with an OSC address.
+///
+/// Not a single on/off box, because a single on/off box is one media server's
+/// habit rather than a cue system: QLab wants **no arguments at all** on
+/// `/cue/5/start`, grandMA3 wants a whole command line as a **string**, and
+/// Resolume wants an **int** to trigger but a **float** for opacity. The type
+/// button shows what will actually go on the wire — `i`, `f`, `s`, `T`, `F` —
+/// which is the same letter the receiving end will see in the type tag.
+fn args_editor(
+    ui: &mut egui::Ui,
+    args: &mut Vec<cue::OscArg>,
+    words: &'static crate::text::Text,
+) -> bool {
+    let mut changed = false;
+    let mut remove = None;
+    let tall = ui.available_height();
+
+    if args.is_empty() {
+        ui.add_sized(
+            [ARG_TYPE + ARG_VALUE, tall],
+            egui::Label::new(egui::RichText::new(words.no_args).size(11.0).weak()),
+        )
+        .on_hover_text(words.no_args_tooltip);
+        // The slot where a remove button would be, left empty on purpose: the
+        // add button then sits in the same column on every line whether or not
+        // that message carries anything.
+        ui.add_space(ARG_BUTTON + 2.0);
+    }
+
+    for (index, arg) in args.iter_mut().enumerate() {
+        // One button per argument, cycling through the types. Faster than a
+        // dropdown for something changed this often, and the button says which
+        // type it is in words rather than making anybody learn the letters.
+        if ui
+            .add_sized(
+                [ARG_TYPE, tall],
+                egui::Button::new(egui::RichText::new(words.arg_type(arg)).size(11.0)),
+            )
+            .on_hover_text(words.arg_types)
+            .clicked()
+        {
+            *arg = next_type(arg);
+            changed = true;
+        }
+
+        match arg {
+            cue::OscArg::Int(value) => {
+                changed |= ui
+                    .add_sized([ARG_VALUE, tall], egui::DragValue::new(value))
                     .changed();
             }
-            changed
+            cue::OscArg::Float(value) => {
+                changed |= ui
+                    .add_sized([ARG_VALUE, tall], egui::DragValue::new(value).speed(0.01))
+                    .changed();
+            }
+            cue::OscArg::Str(value) => {
+                changed |= ui
+                    .add_sized(
+                        [ARG_VALUE, tall],
+                        egui::TextEdit::singleline(value).desired_width(ARG_VALUE),
+                    )
+                    .changed();
+            }
+            // True and false ride in the type tag alone; there is nothing else
+            // to say about them.
+            cue::OscArg::Bool(_) => {
+                ui.add_space(ARG_VALUE);
+            }
         }
-        other => {
-            ui.label(format!("{other:?}"));
-            false
+
+        if ui
+            .add_sized([ARG_BUTTON, tall], egui::Button::new("−"))
+            .on_hover_text(words.remove_arg)
+            .clicked()
+        {
+            remove = Some(index);
         }
+    }
+
+    if ui
+        .add_sized([ARG_BUTTON, tall], egui::Button::new("+"))
+        .on_hover_text(words.add_arg)
+        .clicked()
+    {
+        args.push(cue::OscArg::Int(1));
+        changed = true;
+    }
+
+    if let Some(index) = remove {
+        args.remove(index);
+        changed = true;
+    }
+    changed
+}
+
+/// The next type round the loop, carrying the value across where that means
+/// something. Changing an int to a float should keep the number.
+fn next_type(arg: &cue::OscArg) -> cue::OscArg {
+    match arg {
+        cue::OscArg::Int(value) => cue::OscArg::Float(*value as f32),
+        cue::OscArg::Float(value) => cue::OscArg::Str(format!("{value}")),
+        cue::OscArg::Str(_) => cue::OscArg::Bool(true),
+        cue::OscArg::Bool(true) => cue::OscArg::Bool(false),
+        cue::OscArg::Bool(false) => cue::OscArg::Int(1),
     }
 }
 
@@ -867,11 +1980,12 @@ mod tests {
                     )
                     .show(context, |ui| {
                         let width = ui.max_rect().width();
-                        let fixed = TICK + VALUE + REMOVE + GAP * 5.0;
-                        let flexible = (width - fixed - 20.0).max(280.0);
-                        let at_width = (flexible * 0.14).max(96.0);
-                        let name_width = (flexible * 0.30).max(110.0);
-                        let address_width = (flexible - at_width - name_width).max(150.0);
+                        let Widths {
+                            at: at_width,
+                            name: name_width,
+                            address: address_width,
+                            ..
+                        } = Widths::for_a_window(width, false);
 
                         let mut address = String::from("/composition/columns/1/connect");
                         let mut name = String::from("cue 1");
@@ -897,6 +2011,44 @@ mod tests {
     }
 
     #[test]
+    fn a_row_never_sticks_out_of_the_window() {
+        // The bug this exists to stop: the table was handed the width of the
+        // whole panel, but the section indents its contents, so every row was
+        // that much too wide and the last button of each line sat off the edge.
+        // It took a screenshot to notice. It should have taken a test.
+        for destinations in [false, true] {
+            let narrowest = Widths::narrowest(destinations);
+            for window in [narrowest, narrowest + 100.0, 1280.0, 1920.0, 3840.0] {
+                let widths = Widths::for_a_window(window, destinations);
+                let row = widths.whole_row(destinations);
+                assert!(
+                    row <= window + 0.5,
+                    "at {window:.0}px wide the row needs {row:.0}px (destinations: {destinations})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_field_stays_usable_however_narrow_it_gets() {
+        // The floors matter more than the shares. A timecode field too small to
+        // click into is worse than a row that scrolls.
+        // Asked for less than it can honestly do: the floors hold and the list
+        // scrolls sideways instead.
+        let widths = Widths::for_a_window(400.0, true);
+        assert!(
+            widths.at >= AT_FLOOR,
+            "the timecode field became unclickable"
+        );
+        assert!(widths.name >= NAME_FLOOR);
+        assert!(widths.address >= ADDRESS_FLOOR);
+        assert!(
+            widths.args >= ARG_TYPE + ARG_VALUE + ARG_BUTTON * 2.0,
+            "an argument no longer fits in its own column"
+        );
+    }
+
+    #[test]
     fn the_cue_fields_grow_with_the_window() {
         // The one that was wrong, and wrong in a way that looked like arithmetic
         // and was not. The widths were always worked out correctly; the fields
@@ -904,15 +2056,148 @@ mod tests {
         // room as it had last frame and a TextEdit will not take more room than
         // it is offered. The two agreed with each other for ever and dragging
         // the window did nothing.
-        let narrow = address_field_width(720.0);
-        let wide = address_field_width(1280.0);
+        // Anchored to the narrowest the table can honestly be drawn, so adding
+        // a column later moves the test with the layout instead of breaking it.
+        let narrowest = Widths::narrowest(false);
+        let narrow = address_field_width(narrowest + CHROME);
+        let wide = address_field_width(narrowest + CHROME + 560.0);
 
-        assert!(narrow > 150.0, "the address field started off unusable");
         assert!(
-            wide > narrow + 200.0,
-            "widening the window by 560px gave the address field {:.0}px more",
+            narrow > ADDRESS_FLOOR,
+            "the address field started off at its floor"
+        );
+        // A quarter of the extra room, at least. The exact share is a layout
+        // decision and may move; "dragging the window wider visibly helps" is
+        // the thing that must never stop being true.
+        let extra = 560.0;
+        assert!(
+            wide - narrow >= extra * 0.25,
+            "widening the window by {extra:.0}px gave the address field {:.0}px more",
             wide - narrow
         );
+    }
+
+    fn three_cues() -> Vec<cue::Cue> {
+        (1..=3)
+            .map(|number| {
+                cue::Cue::new(
+                    number,
+                    format!("cue {number}"),
+                    ltc::Timecode::new(10, 0, number as u8, 0),
+                    cue::Message::Osc {
+                        address: "/go".into(),
+                        args: vec![],
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn duplicating_several_copies_the_ones_that_were_ticked() {
+        let mut cues = three_cues();
+        // The first and the last. Done forwards, the second insertion would
+        // land on the copy of the first instead of on cue 3.
+        duplicate_picked(&mut cues, &[0, 2], "(copia)");
+
+        let names: Vec<&str> = cues.iter().map(|cue| cue.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["cue 1", "cue 1 (copia)", "cue 2", "cue 3", "cue 3 (copia)"],
+            "each copy should sit right after the cue it came from"
+        );
+
+        let ids: std::collections::HashSet<u32> = cues.iter().map(|cue| cue.id).collect();
+        assert_eq!(ids.len(), cues.len(), "two cues ended up with the same id");
+    }
+
+    #[test]
+    fn a_copy_arrives_switched_off() {
+        // It lands at the same timecode as the cue it came from. Two cues
+        // firing at the same instant is almost never what anybody meant, and
+        // the red tick says so at a glance.
+        let mut cues = three_cues();
+        duplicate_picked(&mut cues, &[1], "(copia)");
+        assert_eq!(cues[2].at, cues[1].at);
+        assert!(!cues[2].enabled, "the copy came back armed");
+        assert!(cues[1].enabled, "the original was disturbed");
+    }
+
+    #[test]
+    fn deleting_goes_by_id_rather_than_by_row() {
+        // Selection is held by id on purpose: the list is edited and reordered
+        // underneath it, and a selection that follows row numbers deletes the
+        // wrong cues.
+        let mut cues = three_cues();
+        let picked: std::collections::HashSet<u32> = [1, 3].into_iter().collect();
+        cues.retain(|cue| !picked.contains(&cue.id));
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].id, 2);
+    }
+
+    #[test]
+    fn the_filter_changes_what_is_shown_and_nothing_else() {
+        // The trap in filtering a list you also edit: hiding rows must not
+        // change what the row numbers mean. Deleting while a filter is on has
+        // to remove the cue somebody ticked, not the one now in its place.
+        let mut cues = three_cues();
+        cues.push(cue::Cue::new(
+            9,
+            "por MIDI",
+            ltc::Timecode::new(10, 1, 0, 0),
+            cue::Message::MidiProgramChange {
+                channel: 1,
+                program: 12,
+                bank: None,
+            },
+        ));
+
+        let osc: Vec<u32> = cues
+            .iter()
+            .filter(|cue| Filter::Only(Carrier::Osc).shows(cue))
+            .map(|cue| cue.id)
+            .collect();
+        assert_eq!(osc, [1, 2, 3]);
+
+        let midi: Vec<u32> = cues
+            .iter()
+            .filter(|cue| Filter::Only(Carrier::Midi).shows(cue))
+            .map(|cue| cue.id)
+            .collect();
+        assert_eq!(midi, [9]);
+
+        assert_eq!(
+            cues.iter()
+                .filter(|cue| Filter::Everything.shows(cue))
+                .count(),
+            4,
+            "the whole list is still one list"
+        );
+    }
+
+    #[test]
+    fn a_cue_that_sends_to_both_shows_up_under_both() {
+        // The reason there is one list and not one per transport: this cue is a
+        // single moment in the show and belongs in both views, not split in two.
+        let both = cue::Cue::of(
+            1,
+            "video y mesa",
+            ltc::Timecode::new(10, 0, 0, 0),
+            vec![
+                cue::Step::anywhere(cue::Message::Osc {
+                    address: "/go".into(),
+                    args: vec![],
+                }),
+                cue::Step::anywhere(cue::Message::MidiProgramChange {
+                    channel: 1,
+                    program: 3,
+                    bank: None,
+                }),
+            ],
+        );
+        assert!(Filter::Only(Carrier::Osc).shows(&both));
+        assert!(Filter::Only(Carrier::Midi).shows(&both));
+        assert!(Filter::Everything.shows(&both));
     }
 
     #[test]

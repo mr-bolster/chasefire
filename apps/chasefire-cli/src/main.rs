@@ -639,12 +639,26 @@ fn decode_wav(
 fn report(firing: &Firing, output: &mut Option<OscSink>) {
     let status = match output {
         None => "(dry run)".to_string(),
-        Some(sink) => match sink.deliver(&firing.action) {
-            Ok(()) => "sent".to_string(),
-            // A cue that cannot go out is worth shouting about, but it must
-            // never stop the ones after it.
-            Err(error) => format!("FAILED: {error}"),
-        },
+        Some(sink) => {
+            // Every message of the cue is attempted even when one fails: half a
+            // cue is bad, and half a cue that could have been three quarters is
+            // worse. A cue that cannot go out is worth shouting about, but it
+            // must never stop the ones after it.
+            let failures: Vec<String> = firing
+                .steps
+                .iter()
+                .filter_map(|step| sink.deliver(&step.send).err())
+                .map(|error| error.to_string())
+                .collect();
+            if failures.is_empty() {
+                match firing.steps.len() {
+                    1 => "sent".to_string(),
+                    many => format!("sent ({many} messages)"),
+                }
+            } else {
+                format!("FAILED: {}", failures.join("; "))
+            }
+        }
     };
     println!(
         "{}  cue {} \"{}\"  programmed {}  {status}",

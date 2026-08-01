@@ -30,9 +30,9 @@
 use ltc::Timecode;
 use serde::{Deserialize, Serialize};
 
-/// What to send when a cue hits. Data only — see the `sink` crate for the doing.
+/// One message going out. Data only — see the `sink` crate for the doing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Action {
+pub enum Message {
     Osc {
         address: String,
         args: Vec<OscArg>,
@@ -52,8 +52,109 @@ pub enum Action {
         controller: u8,
         value: u8,
     },
+    /// MIDI Show Control: a system exclusive message, and the only thing a
+    /// grandMA2 or a ChamSys will take from us. Neither speaks OSC.
+    ShowControl(ShowControl),
 }
 
+/// One MIDI Show Control command.
+///
+/// The shape is fixed by the standard: `F0 7F <device> 02 <format> <command>
+/// <data> F7`. What varies between desks is which device id they are listening
+/// on and which format they answer to, so both are settings rather than
+/// constants — a console ignoring a message because it was addressed to device
+/// 0 when it is listening on 3 is silent and baffling.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShowControl {
+    /// 0x00..=0x6F one desk, 0x70..=0x7E a group, 0x7F everybody.
+    pub device: u8,
+    /// 0x01 general lighting, 0x02 moving lights, 0x7F all types.
+    pub format: u8,
+    pub command: ShowCommand,
+    /// The cue number **as written**, decimals and all: "21.5", not 21.5. The
+    /// standard sends it as text, and 21.5 and 21.50 are different cues.
+    pub cue: String,
+    /// The cue list, when the desk needs telling which one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<String>,
+}
+
+/// The commands worth having. The standard defines more; these are the ones
+/// consoles actually implement and operators actually use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShowCommand {
+    Go,
+    Stop,
+    Resume,
+    GoOff,
+}
+
+impl ShowCommand {
+    pub fn byte(self) -> u8 {
+        match self {
+            ShowCommand::Go => 0x01,
+            ShowCommand::Stop => 0x02,
+            ShowCommand::Resume => 0x03,
+            ShowCommand::GoOff => 0x0B,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ShowCommand::Go => "GO",
+            ShowCommand::Stop => "STOP",
+            ShowCommand::Resume => "RESUME",
+            ShowCommand::GoOff => "GO OFF",
+        }
+    }
+
+    pub const ALL: [ShowCommand; 4] = [
+        ShowCommand::Go,
+        ShowCommand::Stop,
+        ShowCommand::Resume,
+        ShowCommand::GoOff,
+    ];
+}
+
+impl Default for ShowControl {
+    fn default() -> Self {
+        Self {
+            // Everybody, general lighting: the setting most likely to be heard
+            // by a desk nobody has configured yet.
+            device: 0x7F,
+            format: 0x01,
+            command: ShowCommand::Go,
+            cue: "1".into(),
+            list: None,
+        }
+    }
+}
+
+impl Message {
+    /// Which kind of output can carry this. Used to pick a destination when the
+    /// cue does not name one, and to refuse politely when it names the wrong one.
+    pub fn carried_by(&self) -> Carrier {
+        match self {
+            Self::Osc { .. } => Carrier::Osc,
+            _ => Carrier::Midi,
+        }
+    }
+}
+
+/// The sort of output a message needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Carrier {
+    Osc,
+    Midi,
+}
+
+/// An OSC argument.
+///
+/// All four types exist because the trade needs all four and getting them wrong
+/// is not a cosmetic matter: QLab wants **no arguments at all** on
+/// `/cue/5/start`, grandMA3 wants a whole command line as a **string**, and
+/// Resolume wants an **int** to trigger but a **float** for opacity. A single
+/// on/off integer is not a cue system, it is one media server's habit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OscArg {
     Int(i32),
@@ -62,25 +163,116 @@ pub enum OscArg {
     Bool(bool),
 }
 
-/// One programmed cue.
+/// One message and where it goes.
+///
+/// A cue is a **list** of these, sent in order, because a cue is a moment in a
+/// show and not a wire. The Behringer Wing needs two messages to recall a scene
+/// — the index, then the word GO — and a moment that lights the stage and rolls
+/// the video is two messages to two different machines. Modelling a cue as one
+/// message made both of those impossible to express.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    /// Which configured output this goes to. `None` means the default one for
+    /// its carrier, which is what a show with a single destination wants and
+    /// should never have to think about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    pub send: Message,
+}
+
+impl Step {
+    /// To wherever that kind of message normally goes.
+    pub fn anywhere(send: Message) -> Self {
+        Self { to: None, send }
+    }
+
+    /// To one named output in particular.
+    pub fn to(name: impl Into<String>, send: Message) -> Self {
+        Self {
+            to: Some(name.into()),
+            send,
+        }
+    }
+}
+
+/// One programmed cue: a moment in the show, and everything it sends.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Cue {
     pub id: u32,
     pub name: String,
     pub at: Timecode,
     pub enabled: bool,
-    pub action: Action,
+    pub steps: Vec<Step>,
 }
 
 impl Cue {
-    pub fn new(id: u32, name: impl Into<String>, at: Timecode, action: Action) -> Self {
+    /// A cue that sends one thing, which is most of them.
+    pub fn new(id: u32, name: impl Into<String>, at: Timecode, send: Message) -> Self {
+        Self::of(id, name, at, vec![Step::anywhere(send)])
+    }
+
+    /// A cue that sends several, in order.
+    pub fn of(id: u32, name: impl Into<String>, at: Timecode, steps: Vec<Step>) -> Self {
         Self {
             id,
             name: name.into(),
             at,
             enabled: true,
-            action,
+            steps,
         }
+    }
+
+    /// What sort of outputs this cue needs, in the order it needs them.
+    pub fn carriers(&self) -> impl Iterator<Item = Carrier> + '_ {
+        self.steps.iter().map(|step| step.send.carried_by())
+    }
+}
+
+/// Read a cue, including one written by a version that only knew how to send a
+/// single message.
+///
+/// Somebody's show file is not a schema to be tidied up. A cue list written on
+/// the laptop this morning has to open this afternoon, so the old `action`
+/// field is still understood and quietly becomes a one-step cue. Files are
+/// *written* in the new shape, so the conversion happens once and only once.
+impl<'de> Deserialize<'de> for Cue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        fn yes() -> bool {
+            true
+        }
+
+        #[derive(Deserialize)]
+        struct OnDisk {
+            id: u32,
+            name: String,
+            at: Timecode,
+            #[serde(default = "yes")]
+            enabled: bool,
+            #[serde(default)]
+            steps: Vec<Step>,
+            /// What version 0.1 wrote.
+            #[serde(default)]
+            action: Option<Message>,
+        }
+
+        let disk = OnDisk::deserialize(deserializer)?;
+        let steps = match (disk.steps.is_empty(), disk.action) {
+            (true, Some(action)) => vec![Step::anywhere(action)],
+            _ => disk.steps,
+        };
+        if steps.is_empty() {
+            return Err(serde::de::Error::custom(format!(
+                "cue {} ('{}') does not send anything",
+                disk.id, disk.name
+            )));
+        }
+        Ok(Self {
+            id: disk.id,
+            name: disk.name,
+            at: disk.at,
+            enabled: disk.enabled,
+            steps,
+        })
     }
 }
 
@@ -89,7 +281,8 @@ impl Cue {
 pub struct Firing {
     pub cue_id: u32,
     pub name: String,
-    pub action: Action,
+    /// Everything this cue sends, in order.
+    pub steps: Vec<Step>,
     /// The cue's programmed time, for the log.
     pub at: Timecode,
     /// Where the timecode actually was when it fired, for the log. On a clean
@@ -229,7 +422,7 @@ impl Engine {
                 firings.push(Firing {
                     cue_id: cue.id,
                     name: cue.name.clone(),
-                    action: cue.action.clone(),
+                    steps: cue.steps.clone(),
                     at: cue.at,
                     fired_at: timecode,
                 });
@@ -296,7 +489,7 @@ mod tests {
             id,
             format!("cue {id}"),
             Timecode::new(10, 0, seconds, frames),
-            Action::Osc {
+            Message::Osc {
                 address: format!("/cue/{id}"),
                 args: vec![OscArg::Int(id as i32)],
             },

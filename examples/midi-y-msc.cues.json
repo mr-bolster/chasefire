@@ -1,0 +1,16 @@
+[
+  { "id": 1, "name": "SuperRack snapshot 5",
+    "at": { "hours": 10, "minutes": 0, "seconds": 5, "frames": 0, "drop_frame": false },
+    "enabled": true,
+    "steps": [ { "send": { "MidiProgramChange": { "channel": 1, "program": 5, "bank": null } } } ] },
+  { "id": 2, "name": "grandMA2 cue 21.5",
+    "at": { "hours": 10, "minutes": 0, "seconds": 10, "frames": 0, "drop_frame": false },
+    "enabled": true,
+    "steps": [ { "send": { "ShowControl": { "device": 127, "format": 1, "command": "Go", "cue": "21.5" } } } ] },
+  { "id": 3, "name": "video y mesa a la vez",
+    "at": { "hours": 10, "minutes": 0, "seconds": 15, "frames": 0, "drop_frame": false },
+    "enabled": true,
+    "steps": [
+      { "send": { "Osc": { "address": "/composition/columns/2/connect", "args": [ { "Int": 1 } ] } } },
+      { "send": { "MidiNote": { "channel": 1, "note": 60, "velocity": 127 } } } ] }
+]
