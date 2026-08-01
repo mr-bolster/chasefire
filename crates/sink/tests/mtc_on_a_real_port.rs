@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) Leo Bolster.
+
 //! MTC out of a real port, at the rate a receiver locks to.
 //!
 //! Whether the numbers are right is settled by the encoder's own tests. What

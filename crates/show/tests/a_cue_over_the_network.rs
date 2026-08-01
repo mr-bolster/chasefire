@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) Leo Bolster.
+
 //! A cue, fired by timecode, arriving at a machine over the network.
 //!
 //! The RTP-MIDI session has its own tests and so does the MIDI encoding, but

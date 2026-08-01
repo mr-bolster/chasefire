@@ -4,7 +4,9 @@ description = "Live LTC capture from a sound card, decoded in the audio callback
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# El motor va permisivo a proposito: las aplicaciones que lo usan pueden
+# ser de otro color, y las mejoras al propio motor siguen abiertas.
+license = "MPL-2.0"
 repository.workspace = true
 authors.workspace = true
 

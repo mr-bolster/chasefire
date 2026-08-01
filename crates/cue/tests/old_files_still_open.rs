@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) Leo Bolster.
+
 //! A show file written this morning has to open this afternoon.
 //!
 //! The cue model grew from "one message" to "a list of messages, each with a

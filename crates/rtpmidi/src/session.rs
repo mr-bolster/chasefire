@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) Leo Bolster.
+
 //! Keeping an RTP-MIDI session alive, on its own thread.
 //!
 //! The whole thing runs behind a channel. Firing a cue must never wait on a

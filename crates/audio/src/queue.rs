@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) Leo Bolster.
+
 //! A single-producer single-consumer queue that never blocks and never allocates.
 //!
 //! The audio callback runs on a thread with a hard deadline: if it is late, the

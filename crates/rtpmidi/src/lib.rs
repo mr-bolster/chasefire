@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) Leo Bolster.
+
 //! RTP-MIDI (AppleMIDI): MIDI over a network, with nothing to install.
 //!
 //! This is the one that needs no driver and no virtual cable. A Mac has it in

@@ -3,17 +3,23 @@
 Chase timecode, fire cues.
 
 Chasefire reads **SMPTE LTC** from a sound card, watches for the timecode values
-you have programmed, and fires **OSC** — with MIDI and RTP-MIDI next — at exactly
-those moments. Mixer snapshots, lighting cues and video clips land on the frame,
-every night, without an operator holding their breath over a GO button.
+you have programmed, and fires **OSC, MIDI, MIDI Show Control and RTP-MIDI** at
+exactly those moments. Mixer snapshots, lighting cues and video clips land on
+the frame, every night, without an operator holding their breath over a GO
+button.
+
+It can also send the clock back out as **MIDI Time Code**, which turns the same
+machine into the converter a rig with LTC on a cable and an MTC-only device has
+been missing.
 
 It runs on the machine you already own: no kernel drivers, no licence that
 expires halfway through a tour, no phoning home.
 
 > **Status: it works, and it is not finished.** Live capture, frame-rate
-> detection, the cue engine and OSC output have all been proved against real
-> hardware and a real media server. The settings screen is not built yet, so the
-> window is configured from the command line. MIDI and RTP-MIDI are still to come.
+> detection, the cue engine, OSC, MIDI, MSC, RTP-MIDI and MTC output have all
+> been proved against real hardware — a real preamp, a real MIDI port and
+> sockets that answer. Still to come: MTC **in**, and a control input so a
+> surface can arm the show.
 
 ## What it looks like
 
@@ -140,7 +146,8 @@ crates/ltc      SMPTE LTC decoder and encoder. Pure DSP, no I/O.
 crates/chase    Decides which decoded frames to believe.
 crates/cue      The cue table and the firing rules. No sockets.
 crates/audio    Live capture and generation, decoded in the audio callback.
-crates/sink     Where a fired cue goes out. OSC today.
+crates/sink     Where a fired cue goes out: OSC, MIDI, MSC, RTP-MIDI, MTC.
+crates/rtpmidi  RTP-MIDI (AppleMIDI) sessions, spoken here rather than driven.
 crates/pablo    The little guitarist, and the rule that he cannot lie.
 crates/show     All of the above, wired together in one place.
 apps/chasefire       The window.
@@ -159,5 +166,24 @@ On Linux you will need ALSA's headers: `sudo apt install libasound2-dev`.
 
 ## Licence
 
-GPL-3.0-or-later. The source is open and always will be. Ready-made signed
-builds are what you pay for — once, not every year.
+Two, on purpose, and the line between them is not arbitrary.
+
+**The engine is MPL-2.0** — `ltc`, `cue`, `chase`, `audio`, `sink`, `rtpmidi`,
+`show`. That is the decoder, the firing rules, the chaser and the outputs: the
+parts where the edge cases live and where being right matters. MPL is
+file-level copyleft, so improvements to those files stay open and can be used
+by anything, including software that is not open at all.
+
+**The program is GPL-3.0-or-later** — everything under `apps/`, and the
+`pablo` crate, which carries commissioned artwork.
+
+The source is open and always will be. Ready-made signed builds are what you
+pay for — once, not every year.
+
+### About patches
+
+Please **open an issue rather than a pull request.** Not out of unfriendliness:
+merged code belongs to whoever wrote it, and a handful of accepted lines can
+permanently prevent the author from licensing his own work another way later.
+Describe the problem, or the fix, and it will be written here and credited to
+you in the commit.
