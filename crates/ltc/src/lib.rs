@@ -57,9 +57,25 @@ impl Timecode {
         self
     }
 
-    /// True if every field is inside the range the SMPTE spec allows.
+    /// True if every field can exist in the timecode formats Chasefire supports.
+    ///
+    /// LTC and MTC only carry frame labels up to 29. The physical signal can
+    /// run faster, but 50/60 fps needs an explicit paired-frame convention;
+    /// treating 40..59 as native labels aliases them back to 00..19.
     pub fn is_plausible(&self) -> bool {
-        self.hours < 24 && self.minutes < 60 && self.seconds < 60 && self.frames < 60
+        self.hours < 24
+            && self.minutes < 60
+            && self.seconds < 60
+            && self.frames < 30
+            && !(self.drop_frame && self.seconds == 0 && self.minutes % 10 != 0 && self.frames < 2)
+    }
+
+    /// True when this label exists at the given integer counting rate.
+    pub fn is_valid_at(&self, nominal_fps: u8) -> bool {
+        self.is_plausible()
+            && matches!(nominal_fps, 24 | 25 | 30)
+            && self.frames < nominal_fps
+            && (!self.drop_frame || nominal_fps == 30)
     }
 
     /// Advance by one frame at the given nominal rate.
@@ -80,7 +96,7 @@ impl Timecode {
         }
         self.seconds = 0;
         self.minutes += 1;
-        if self.drop_frame && self.minutes % 10 != 0 {
+        if self.drop_frame && nominal_fps == 30 && self.minutes % 10 != 0 {
             self.frames = 2;
         }
         if self.minutes < 60 {
@@ -90,10 +106,58 @@ impl Timecode {
         self.hours = (self.hours + 1) % 24;
     }
 
-    /// Position within the day, in whole frames, ignoring drop-frame numbering.
+    /// Move back by one real frame at the given integer counting rate.
+    pub fn retreat_one_frame(&mut self, nominal_fps: u8) {
+        if self.drop_frame
+            && nominal_fps == 30
+            && self.seconds == 0
+            && self.minutes % 10 != 0
+            && self.frames == 2
+        {
+            self.frames = nominal_fps - 1;
+            if self.minutes > 0 {
+                self.minutes -= 1;
+            } else {
+                self.minutes = 59;
+                if self.hours > 0 {
+                    self.hours -= 1;
+                } else {
+                    self.hours = 23;
+                }
+            }
+            self.seconds = 59;
+            return;
+        }
+
+        if self.frames > 0 {
+            self.frames -= 1;
+            return;
+        }
+        self.frames = nominal_fps - 1;
+        if self.seconds > 0 {
+            self.seconds -= 1;
+            return;
+        }
+        self.seconds = 59;
+        if self.minutes > 0 {
+            self.minutes -= 1;
+            return;
+        }
+        self.minutes = 59;
+        self.hours = if self.hours > 0 { self.hours - 1 } else { 23 };
+    }
+
+    /// Position within the day in real frame steps.
     pub fn as_frame_count(&self, nominal_fps: u32) -> u32 {
-        ((self.hours as u32 * 60 + self.minutes as u32) * 60 + self.seconds as u32) * nominal_fps
-            + self.frames as u32
+        let minutes = self.hours as u32 * 60 + self.minutes as u32;
+        let labelled = (minutes * 60 + self.seconds as u32) * nominal_fps + self.frames as u32;
+        if self.drop_frame && nominal_fps == 30 {
+            // Two labels are skipped at every minute except each tenth.
+            let dropped = 2 * (minutes - minutes / 10);
+            labelled.saturating_sub(dropped)
+        } else {
+            labelled
+        }
     }
 }
 
@@ -131,16 +195,7 @@ pub struct DecodedFrame {
 }
 
 /// The frame rates worth snapping a measurement to.
-pub const KNOWN_FRAME_RATES: [f64; 8] = [
-    24_000.0 / 1001.0,
-    24.0,
-    25.0,
-    30_000.0 / 1001.0,
-    30.0,
-    50.0,
-    60_000.0 / 1001.0,
-    60.0,
-];
+pub const KNOWN_FRAME_RATES: [f64; 5] = [24_000.0 / 1001.0, 24.0, 25.0, 30_000.0 / 1001.0, 30.0];
 
 /// Round a measured rate to the closest rate anyone actually uses, when it is
 /// close enough to be that rate rather than a bad measurement.
@@ -695,6 +750,10 @@ impl Encoder {
         amplitude: f32,
         out: &mut Vec<f32>,
     ) {
+        assert!(
+            timecode.is_valid_at(nominal_fps),
+            "{timecode} is not a valid label at {nominal_fps} fps"
+        );
         let bits = build_frame_bits(timecode, nominal_fps);
         let samples_per_bit = sample_rate / (FRAME_BITS as f64 * fps);
 
@@ -826,6 +885,13 @@ mod tests {
         timecode.advance_one_frame(30);
         assert_eq!(timecode.to_string(), "00:01:00;02");
 
+        timecode.retreat_one_frame(30);
+        assert_eq!(timecode.to_string(), "00:00:59;29");
+
+        let before = Timecode::new(0, 0, 59, 29).with_drop_frame(true);
+        let after = Timecode::new(0, 1, 0, 2).with_drop_frame(true);
+        assert_eq!(after.as_frame_count(30) - before.as_frame_count(30), 1);
+
         // ...except on the tenth minute, where nothing is skipped.
         let mut tenth = Timecode::new(0, 9, 59, 29).with_drop_frame(true);
         tenth.advance_one_frame(30);
@@ -895,10 +961,10 @@ mod tests {
     #[test]
     fn decodes_every_sample_rate_at_every_frame_rate() {
         // The matrix a live rig actually throws at you. 96 kHz gives the decoder
-        // twice the samples per bit; 44.1 kHz at 60 fps gives it barely nine,
-        // which is the tightest corner of the whole table.
+        // twice the samples per bit; every supported counting rate must survive
+        // every sample rate without relying on the encoder's favourite case.
         for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
-            for (nominal, fps) in [(24u8, 24.0), (25, 25.0), (30, 30.0), (50, 50.0), (60, 60.0)] {
+            for (nominal, fps) in [(24u8, 24.0), (25, 25.0), (30, 30.0)] {
                 let spec = Sequence {
                     start: Timecode::new(10, 0, 30, 0),
                     count: 12,
@@ -943,8 +1009,6 @@ mod tests {
                 (25, 25.0),
                 (30, 30.0),
                 (30, 30_000.0 / 1001.0),
-                (50, 50.0),
-                (60, 60.0),
             ] {
                 let mut audio = Vec::new();
                 let expected = Encoder::new().encode_sequence(
@@ -1190,12 +1254,11 @@ mod tests {
     }
 
     #[test]
-    fn frame_numbers_above_39_do_not_fit_in_the_format() {
-        // Not our bug, the format's: LTC gives the frame count four bits of
-        // units and only TWO of tens. Anything from 40 up is unrepresentable,
-        // which is exactly why 50 and 60 fps are carried as half-rate pairs
-        // rather than as a native frame count. Pinned here so nobody "fixes"
-        // the encoder into silently lying about it later.
+    #[should_panic(expected = "is not a valid label")]
+    fn frame_numbers_above_29_are_refused_instead_of_aliased() {
+        // The old encoder truncated the tens field: frame 40 came back as 00,
+        // the chaser re-armed, and a cue at frame 10 fired twice. Programmer
+        // misuse must be loud even though the CLI validates before this point.
         let spec = Sequence {
             start: Timecode::new(1, 0, 0, 42),
             count: 1,
@@ -1206,17 +1269,21 @@ mod tests {
         };
         let mut audio = Vec::new();
         Encoder::new().encode_sequence(spec, &mut audio);
+    }
 
-        let mut decoder = Decoder::new(48_000.0, 60.0);
-        let mut decoded = Vec::new();
-        decoder.push_samples(&audio, &mut decoded);
-
-        if let Some(frame) = decoded.first() {
-            assert_ne!(
-                frame.timecode.frames, 42,
-                "frame 42 came back intact — the format cannot do that"
-            );
-        }
+    #[test]
+    fn validation_uses_the_rate_and_refuses_nonexistent_drop_labels() {
+        assert!(Timecode::new(1, 2, 3, 23).is_valid_at(24));
+        assert!(!Timecode::new(1, 2, 3, 24).is_valid_at(24));
+        assert!(!Timecode::new(1, 2, 3, 25).is_valid_at(25));
+        assert!(Timecode::new(1, 2, 3, 29).is_valid_at(30));
+        assert!(!Timecode::new(1, 2, 3, 30).is_plausible());
+        assert!(!Timecode::new(1, 1, 0, 0)
+            .with_drop_frame(true)
+            .is_plausible());
+        assert!(Timecode::new(1, 10, 0, 0)
+            .with_drop_frame(true)
+            .is_valid_at(30));
     }
 
     #[test]

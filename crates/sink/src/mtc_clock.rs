@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 /// What the clock is told from outside.
 enum Word {
     /// The show is here, at this rate.
-    At(Timecode, Rate),
+    At(Timecode, Rate, bool),
     /// The timecode has gone. Stop sending rather than free-running: a machine
     /// that keeps receiving MTC believes the show is still going.
     Lost,
@@ -58,7 +58,7 @@ impl MtcClock {
         std::thread::Builder::new()
             .name("chasefire-mtc".into())
             .spawn(move || {
-                let mut position: Option<(Timecode, Rate)> = None;
+                let mut position: Option<(Timecode, Rate, bool)> = None;
                 let mut piece = 0u8;
                 // The position the current sequence of eight is describing.
                 let mut sequence_at: Option<Timecode> = None;
@@ -69,19 +69,23 @@ impl MtcClock {
                     // the clock behind.
                     loop {
                         match inbox.try_recv() {
-                            Ok(Word::At(at, rate)) => {
+                            Ok(Word::At(at, rate, reverse)) => {
                                 let jumped = match position {
                                     None => true,
-                                    Some((was, _)) => !follows(was, at, rate),
+                                    Some((was, old_rate, old_reverse)) => {
+                                        rate != old_rate
+                                            || reverse != old_reverse
+                                            || !follows(was, at, rate, reverse)
+                                    }
                                 };
-                                position = Some((at, rate));
+                                position = Some((at, rate, reverse));
                                 if jumped {
                                     // A whole position in one message. Eight
                                     // quarter-frames would take two frames to
                                     // say it, and after a seek the receiver
                                     // needs it now.
                                     note(&mine, sink.send_raw(&full_frame(at, rate)));
-                                    piece = 0;
+                                    piece = if reverse { 7 } else { 0 };
                                     sequence_at = Some(at);
                                     next_at = Instant::now();
                                 }
@@ -92,7 +96,7 @@ impl MtcClock {
                         }
                     }
 
-                    let Some((_, rate)) = position else {
+                    let Some((_, rate, reverse)) = position else {
                         // Nothing to say. Idle politely rather than spinning.
                         std::thread::sleep(Duration::from_millis(20));
                         next_at = Instant::now();
@@ -107,15 +111,15 @@ impl MtcClock {
                     }
 
                     // A new sequence starts at whatever the position is now;
-                    // the four pieces after it keep describing that same
+                    // the seven pieces after it keep describing that same
                     // position, which is what a receiver expects.
-                    if piece == 0 {
-                        sequence_at = position.map(|(at, _)| at);
+                    if (!reverse && piece == 0) || (reverse && piece == 7) {
+                        sequence_at = position.map(|(at, _, _)| at);
                     }
                     if let Some(at) = sequence_at {
                         note(&mine, sink.send_raw(&quarter_frame(piece, at, rate)));
                     }
-                    piece = (piece + 1) & 0x07;
+                    piece = next_piece(piece, reverse);
                     next_at += quarter;
                     // If we fell a long way behind — the machine was busy, or
                     // the show was paused — start again from now rather than
@@ -144,9 +148,15 @@ impl MtcClock {
     }
 
     /// Tell it where the show is. Cheap enough to call on every frame.
-    pub fn at(&self, timecode: Timecode, fps: f64) {
-        let rate = Rate::nearest(fps, timecode.drop_frame);
-        let _ = self.words.send(Word::At(timecode, rate));
+    pub fn at(&self, timecode: Timecode, fps: f64, reverse: bool) {
+        let Some(rate) = Rate::nearest(fps, timecode.drop_frame) else {
+            // MTC has no native 50/60 fps labels. Sending the original frame
+            // number at a half-rate code aliases 40..59 onto earlier frames.
+            let _ = self.words.send(Word::Lost);
+            self.alive.store(false, Ordering::Relaxed);
+            return;
+        };
+        let _ = self.words.send(Word::At(timecode, rate, reverse));
     }
 
     /// The timecode has gone.
@@ -167,12 +177,64 @@ fn note(alive: &AtomicBool, outcome: std::io::Result<()>) {
 /// Does `now` follow `was` by one frame, give or take? Anything else is a jump
 /// and deserves a full frame rather than being crawled towards a nibble at a
 /// time.
-fn follows(was: Timecode, now: Timecode, rate: Rate) -> bool {
-    let fps = rate.fps().round() as i64;
-    let frames = |at: Timecode| {
-        ((at.hours as i64 * 3600) + (at.minutes as i64 * 60) + at.seconds as i64) * fps
-            + at.frames as i64
-    };
-    let gap = frames(now) - frames(was);
-    (0..=2).contains(&gap)
+fn follows(was: Timecode, now: Timecode, rate: Rate, reverse: bool) -> bool {
+    let fps = rate.fps().ceil() as u32;
+    let gap = now.as_frame_count(fps) as i64 - was.as_frame_count(fps) as i64;
+    if reverse {
+        (-2..=0).contains(&gap)
+    } else {
+        (0..=2).contains(&gap)
+    }
+}
+
+fn next_piece(piece: u8, reverse: bool) -> u8 {
+    if reverse {
+        (piece + 7) & 0x07
+    } else {
+        (piece + 1) & 0x07
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_drop_frame_minute_boundary_is_continuous() {
+        let was = Timecode::new(10, 0, 59, 29).with_drop_frame(true);
+        let now = Timecode::new(10, 1, 0, 2).with_drop_frame(true);
+        assert!(follows(was, now, Rate::Fps2997Drop, false));
+    }
+
+    #[test]
+    fn reverse_continuity_runs_towards_smaller_positions() {
+        assert!(follows(
+            Timecode::new(10, 0, 5, 10),
+            Timecode::new(10, 0, 5, 9),
+            Rate::Fps25,
+            true
+        ));
+        assert!(!follows(
+            Timecode::new(10, 0, 5, 10),
+            Timecode::new(10, 0, 5, 9),
+            Rate::Fps25,
+            false
+        ));
+    }
+
+    #[test]
+    fn quarter_frame_piece_order_follows_the_direction() {
+        let mut forward = 0;
+        let mut forward_pieces = Vec::new();
+        let mut reverse = 7;
+        let mut reverse_pieces = Vec::new();
+        for _ in 0..8 {
+            forward_pieces.push(forward);
+            forward = next_piece(forward, false);
+            reverse_pieces.push(reverse);
+            reverse = next_piece(reverse, true);
+        }
+        assert_eq!(forward_pieces, [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(reverse_pieces, [7, 6, 5, 4, 3, 2, 1, 0]);
+    }
 }

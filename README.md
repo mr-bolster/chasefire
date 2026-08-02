@@ -51,7 +51,8 @@ order. All of it can be written down.
 ## What it has
 
 - **In:** LTC off a sound card at 44.1 / 48 / 96 kHz, or MTC off a MIDI port.
-  24, 25, 30, 50 and 60 fps, drop frame included.
+  23.98, 24, 25, 29.97 drop-frame and 30 fps. 50/60 stay disabled until their
+  paired-frame representation is proved against an independent real fixture.
 - **Out:** OSC, MIDI, MSC, RTP-MIDI — several destinations at once, each with a
   name a cue can address.
 - **Clock out:** MTC, properly paced, so a receiver can lock to it.

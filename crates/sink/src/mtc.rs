@@ -31,26 +31,17 @@ pub enum Rate {
 }
 
 impl Rate {
-    /// The nearest thing MTC can say to a given frame rate.
-    ///
-    /// 50 and 60 fps are the awkward ones: the standard has no code for either.
-    /// They are sent as their half rate, which is what every other converter in
-    /// the trade does — a 50 fps show clocks a receiver at 25, and the receiver
-    /// is right about the second even if it cannot see every frame.
-    pub fn nearest(fps: f64, drop_frame: bool) -> Self {
-        match fps {
+    /// The nearest rate MTC can represent, or `None` for an unsupported rate.
+    pub fn nearest(fps: f64, drop_frame: bool) -> Option<Self> {
+        if !(23.0..=30.5).contains(&fps) {
+            return None;
+        }
+        Some(match fps {
             rate if rate < 24.5 => Rate::Fps24,
             rate if rate < 27.0 => Rate::Fps25,
-            rate if rate < 45.0 => {
-                if drop_frame {
-                    Rate::Fps2997Drop
-                } else {
-                    Rate::Fps30
-                }
-            }
-            rate if rate < 55.0 => Rate::Fps25,
+            _ if drop_frame => Rate::Fps2997Drop,
             _ => Rate::Fps30,
-        }
+        })
     }
 
     pub fn code(self) -> u8 {
@@ -209,15 +200,12 @@ mod tests {
     }
 
     #[test]
-    fn the_rates_with_no_code_are_sent_as_their_half() {
-        // 50 and 60 have no code in the standard. Half is what every other
-        // converter does: the receiver is right about the second even though it
-        // cannot see every frame.
-        assert_eq!(Rate::nearest(50.0, false), Rate::Fps25);
-        assert_eq!(Rate::nearest(60.0, false), Rate::Fps30);
-        assert_eq!(Rate::nearest(25.0, false), Rate::Fps25);
-        assert_eq!(Rate::nearest(24.0, false), Rate::Fps24);
-        assert_eq!(Rate::nearest(30.0, false), Rate::Fps30);
-        assert_eq!(Rate::nearest(29.97, true), Rate::Fps2997Drop);
+    fn unsupported_rates_are_refused_instead_of_aliased() {
+        assert_eq!(Rate::nearest(50.0, false), None);
+        assert_eq!(Rate::nearest(60.0, false), None);
+        assert_eq!(Rate::nearest(25.0, false), Some(Rate::Fps25));
+        assert_eq!(Rate::nearest(24.0, false), Some(Rate::Fps24));
+        assert_eq!(Rate::nearest(30.0, false), Some(Rate::Fps30));
+        assert_eq!(Rate::nearest(29.97, true), Some(Rate::Fps2997Drop));
     }
 }

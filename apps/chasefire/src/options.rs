@@ -70,14 +70,12 @@ pub const DONATE_URL: &str = "https://paypal.me/mrbolster";
 const SOURCE_URL: &str = "https://github.com/mr-bolster/chasefire";
 
 /// Rates worth offering, and what each is called on a spec sheet.
-const RATES: [(&str, f64); 7] = [
+const RATES: [(&str, f64); 5] = [
     ("23.98", 24_000.0 / 1001.0),
     ("24", 24.0),
     ("25", 25.0),
     ("29.97", 30_000.0 / 1001.0),
     ("30", 30.0),
-    ("50", 50.0),
-    ("60", 60.0),
 ];
 
 pub struct Options {
@@ -884,6 +882,7 @@ impl Options {
         // last button of each line was sitting off the edge.
         let width = ui.max_rect().width();
         let outputs = runner.output_names();
+        let nominal_fps = runner.frame_rate().map(|rate| rate.ceil() as u8);
         // The destination column only exists once there is a choice to make. A
         // show with one machine should never have to learn that outputs have
         // names at all.
@@ -945,6 +944,7 @@ impl Options {
                             cue,
                             &mut self.selected,
                             &outputs,
+                            nominal_fps,
                             show_destination,
                             words,
                             &widths,
@@ -977,6 +977,7 @@ impl Options {
                             &mut self.drafts[slot],
                             &mut self.selected,
                             &outputs,
+                            nominal_fps,
                             show_destination,
                             words,
                             &widths,
@@ -1494,6 +1495,7 @@ fn cue_block(
     cue: &mut cue::Cue,
     selected: &mut std::collections::HashSet<u32>,
     outputs: &[String],
+    nominal_fps: Option<u8>,
     show_destination: bool,
     words: &'static crate::text::Text,
     widths: &Widths,
@@ -1586,7 +1588,7 @@ fn cue_block(
                         .on_hover_text(words.at_tooltip)
                         .changed();
                     if edited {
-                        if let Some(parsed) = parse_timecode(&text) {
+                        if let Some(parsed) = parse_timecode(&text, nominal_fps) {
                             cue.at = parsed;
                             outcome.changed = true;
                         }
@@ -2024,7 +2026,7 @@ fn next_type(arg: &cue::OscArg) -> cue::OscArg {
 }
 
 /// Accept a timecode only when it is one.
-fn parse_timecode(text: &str) -> Option<ltc::Timecode> {
+fn parse_timecode(text: &str, nominal_fps: Option<u8>) -> Option<ltc::Timecode> {
     let drop_frame = text.contains(';');
     let parts: Vec<&str> = text.split([':', ';']).collect();
     if parts.len() != 4 {
@@ -2041,12 +2043,23 @@ fn parse_timecode(text: &str) -> Option<ltc::Timecode> {
         frames: numbers[3],
         drop_frame,
     };
-    timecode.is_plausible().then_some(timecode)
+    let valid = nominal_fps
+        .map(|fps| timecode.is_valid_at(fps))
+        .unwrap_or_else(|| timecode.is_plausible());
+    valid.then_some(timecode)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cue_timecodes_are_checked_against_the_active_rate() {
+        assert!(parse_timecode("00:00:00:24", Some(25)).is_some());
+        assert!(parse_timecode("00:00:00:25", Some(25)).is_none());
+        assert!(parse_timecode("00:00:00:29", Some(30)).is_some());
+        assert!(parse_timecode("00:01:00;00", Some(30)).is_none());
+    }
 
     /// Measure a string the way egui will actually draw it, using egui's own
     /// font stack. Character counts are not good enough here: "Frames por

@@ -174,6 +174,7 @@ pub struct Runner {
     /// When the level was last above the noise floor.
     signal_seen_at: Option<Instant>,
     error: Option<String>,
+    cue_error: Option<String>,
 }
 
 impl Runner {
@@ -199,11 +200,13 @@ impl Runner {
             samples_moved_at: None,
             signal_seen_at: None,
             error: None,
+            cue_error: None,
         }
     }
 
     pub fn set_cues(&mut self, cues: Vec<Cue>) {
         self.engine.set_cues(cues);
+        self.refresh_cue_error();
     }
 
     pub fn cues(&self) -> &[Cue] {
@@ -227,6 +230,7 @@ impl Runner {
             self.engine.set_nominal_fps(nominal);
             self.chaser.set_nominal_fps(nominal);
         }
+        self.refresh_cue_error();
     }
 
     pub fn open_input(
@@ -489,8 +493,22 @@ impl Runner {
     pub fn load_cues(&mut self, path: &std::path::Path) -> Result<usize, String> {
         let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
         let cues: Vec<Cue> = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+        let nominal = self.frame_rate().map(|rate| rate.ceil() as u8);
+        if let Some(cue) = cues.iter().find(|cue| {
+            nominal
+                .map(|fps| !cue.at.is_valid_at(fps))
+                .unwrap_or_else(|| !cue.at.is_plausible())
+        }) {
+            let at_rate = nominal
+                .map(|fps| format!(" at {fps} fps"))
+                .unwrap_or_default();
+            return Err(format!(
+                "cue {} ('{}') has an invalid timecode {}{}",
+                cue.id, cue.name, cue.at, at_rate
+            ));
+        }
         let count = cues.len();
-        self.engine.set_cues(cues);
+        self.set_cues(cues);
         Ok(count)
     }
 
@@ -585,7 +603,7 @@ impl Runner {
     }
 
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_deref().or(self.cue_error.as_deref())
     }
 
     pub fn rejections(&self) -> chase::Rejections {
@@ -627,12 +645,13 @@ impl Runner {
                     self.engine.set_nominal_fps(nominal);
                     self.chaser.set_nominal_fps(nominal);
                     self.settled = true;
+                    self.refresh_cue_error();
                     settled_rate = Some((position.rate.fps(), nominal));
                 }
                 self.current = Some(position.at);
                 self.last_frame_at = Some(Instant::now());
-                self.tell_the_mtc_clock(position.at);
-                let fired = self.engine.update(position.at, false);
+                self.tell_the_mtc_clock(position.at, position.reverse);
+                let fired = self.engine.update(position.at, position.reverse);
                 self.deliver(fired, &mut events);
             }
             if let Some((fps, nominal)) = settled_rate {
@@ -695,6 +714,7 @@ impl Runner {
                     self.chaser.set_nominal_fps(nominal);
                     self.samples_per_frame = sample_rate as f64 / rate;
                     self.settled = true;
+                    self.refresh_cue_error();
                     events.push(Event::Locked { fps: rate, nominal });
                 }
             }
@@ -705,7 +725,7 @@ impl Runner {
             if let Some(tick) = self.chaser.on_frame(&frame) {
                 self.current = Some(tick.timecode);
                 self.last_frame_at = Some(Instant::now());
-                self.tell_the_mtc_clock(tick.timecode);
+                self.tell_the_mtc_clock(tick.timecode, tick.reverse);
                 let fired = self.engine.update(tick.timecode, tick.reverse);
                 self.deliver(fired, &mut events);
             }
@@ -733,7 +753,7 @@ impl Runner {
             match self.chaser.on_missing_frame() {
                 Some(tick) => {
                     self.current = Some(tick.timecode);
-                    self.tell_the_mtc_clock(tick.timecode);
+                    self.tell_the_mtc_clock(tick.timecode, tick.reverse);
                     let fired = self.engine.update(tick.timecode, tick.reverse);
                     self.deliver(fired, &mut events);
                 }
@@ -765,7 +785,7 @@ impl Runner {
     pub fn accept_timecode(&mut self, at: Timecode, source: Source) -> Vec<Event> {
         self.external_source = Some(source);
         self.current = Some(at);
-        self.tell_the_mtc_clock(at);
+        self.tell_the_mtc_clock(at, false);
         self.last_frame_at = Some(Instant::now());
         let mut events = Vec::new();
         let fired = self.engine.update(at, false);
@@ -773,9 +793,9 @@ impl Runner {
         events
     }
 
-    fn tell_the_mtc_clock(&self, at: Timecode) {
+    fn tell_the_mtc_clock(&self, at: Timecode, reverse: bool) {
         if let Some(clock) = &self.mtc {
-            clock.at(at, self.frame_rate().unwrap_or(25.0));
+            clock.at(at, self.frame_rate().unwrap_or(25.0), reverse);
         }
     }
 
@@ -807,6 +827,25 @@ impl Runner {
             };
             events.push(Event::Fired { firing, sent });
         }
+    }
+
+    fn refresh_cue_error(&mut self) {
+        if !self.settled {
+            self.cue_error = None;
+            return;
+        }
+        let nominal = self.engine.nominal_fps();
+        self.cue_error = self
+            .engine
+            .cues()
+            .iter()
+            .find(|cue| !cue.at.is_valid_at(nominal))
+            .map(|cue| {
+                format!(
+                    "cue {} ('{}') has an invalid timecode {} at {nominal} fps",
+                    cue.id, cue.name, cue.at
+                )
+            });
     }
 
     /// The flourish to draw for a cue that just went out.
@@ -901,5 +940,42 @@ mod tests {
         runner.set_cues(vec![a_cue()]);
         assert_eq!(runner.cues().len(), 1);
         assert_eq!(runner.pending_cues(), 1);
+    }
+
+    #[test]
+    fn loading_refuses_a_cue_at_a_frame_that_does_not_exist() {
+        let path =
+            std::env::temp_dir().join(format!("chasefire-invalid-cue-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"[{"id":1,"name":"late","at":{"hours":0,"minutes":0,"seconds":0,"frames":50,"drop_frame":false},"enabled":true,"steps":[{"send":{"Osc":{"address":"/go","args":[]}}}]}]"#,
+        )
+        .unwrap();
+
+        let mut runner = Runner::new(25);
+        runner.pin_frame_rate(Some(25.0));
+        let error = runner.load_cues(&path).expect_err("invalid cue was loaded");
+        assert!(error.contains("invalid timecode"), "{error}");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn auto_detection_exposes_cues_that_do_not_exist_at_the_rate_it_found() {
+        let mut runner = Runner::new(25);
+        runner.set_cues(vec![Cue::new(
+            1,
+            "frame 29",
+            Timecode::new(0, 0, 0, 29),
+            Message::Osc {
+                address: "/go".into(),
+                args: Vec::new(),
+            },
+        )]);
+        assert!(runner.error().is_none(), "rate is not known yet");
+
+        runner.pin_frame_rate(Some(25.0));
+        let error = runner.error().expect("invalid cue stayed silent");
+        assert!(error.contains("frame 29"), "{error}");
+        assert_eq!(runner.pending_cues(), 0);
     }
 }

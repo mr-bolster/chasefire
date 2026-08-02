@@ -30,8 +30,8 @@ use ltc::Timecode;
 /// What a reader has worked out so far.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Heard {
-    /// A whole position, and the rate it came with.
-    At(Timecode, Rate),
+    /// A whole position, the rate it came with, and whether it is rewinding.
+    At(Timecode, Rate, bool),
     /// Something arrived and was understood, but there is not a position yet.
     Building,
     /// Not MTC, or not anything we can use.
@@ -123,7 +123,7 @@ impl Reader {
         // Leaving them off puts everything downstream two frames behind, which
         // at 25 fps is 80 ms — the difference between a cue landing on the hit
         // and landing after it.
-        Heard::At(advanced_by_two(at, rate), rate)
+        Heard::At(moved_by_two(at, rate, self.reversing), rate, self.reversing)
     }
 
     fn full_frame(&mut self, message: &[u8]) -> Heard {
@@ -147,7 +147,7 @@ impl Reader {
         self.seen = [false; 8];
         self.expecting = None;
         self.reversing = false;
-        Heard::At(at, rate)
+        Heard::At(at, rate, false)
     }
 }
 
@@ -160,17 +160,21 @@ fn rate_of(code: u8) -> Rate {
     }
 }
 
-/// Move a position on by two frames.
+/// Move a position by the two frames spent spelling it out.
 ///
 /// Drop frame is the whole difficulty. At 29.97 the numbers **00 and 01 do not
 /// exist** at the top of every minute except every tenth — they are skipped so
 /// that the clock keeps up with real time. Counting straight through produces
 /// a timecode that never happens, and a cue programmed a frame away from a
 /// minute boundary then never lines up with it.
-fn advanced_by_two(at: Timecode, rate: Rate) -> Timecode {
+fn moved_by_two(at: Timecode, rate: Rate, reverse: bool) -> Timecode {
     let mut moved = at;
     for _ in 0..2 {
-        moved = next_frame(moved, rate);
+        if reverse {
+            moved.retreat_one_frame(rate.fps().ceil() as u8);
+        } else {
+            moved = next_frame(moved, rate);
+        }
     }
     moved
 }
@@ -243,7 +247,7 @@ mod tests {
             heard[..7].iter().all(|step| *step == Heard::Building),
             "a position appeared before the sequence finished: {heard:?}"
         );
-        assert_eq!(heard[7], Heard::At(at(10, 11, 12, 15), Rate::Fps25));
+        assert_eq!(heard[7], Heard::At(at(10, 11, 12, 15), Rate::Fps25, false));
     }
 
     #[test]
@@ -260,7 +264,7 @@ mod tests {
             drop_frame: true,
         };
         match spell(&mut reader, at_the_edge, Rate::Fps2997Drop)[7] {
-            Heard::At(got, _) => {
+            Heard::At(got, _, _) => {
                 assert_eq!((got.minutes, got.seconds, got.frames), (1, 0, 3));
             }
             other => panic!("expected a position, got {other:?}"),
@@ -276,7 +280,7 @@ mod tests {
             drop_frame: true,
         };
         match spell(&mut reader, tenth, Rate::Fps2997Drop)[7] {
-            Heard::At(got, _) => {
+            Heard::At(got, _, _) => {
                 assert_eq!((got.minutes, got.seconds, got.frames), (10, 0, 1));
             }
             other => panic!("expected a position, got {other:?}"),
@@ -287,12 +291,12 @@ mod tests {
     fn the_two_frames_carry_over_the_end_of_a_second() {
         let mut reader = Reader::new();
         let heard = spell(&mut reader, at(10, 0, 0, 24), Rate::Fps25);
-        assert_eq!(heard[7], Heard::At(at(10, 0, 1, 1), Rate::Fps25));
+        assert_eq!(heard[7], Heard::At(at(10, 0, 1, 1), Rate::Fps25, false));
 
         // And over the end of an hour.
         let mut reader = Reader::new();
         let heard = spell(&mut reader, at(9, 59, 59, 29), Rate::Fps30);
-        assert_eq!(heard[7], Heard::At(at(10, 0, 0, 1), Rate::Fps30));
+        assert_eq!(heard[7], Heard::At(at(10, 0, 0, 1), Rate::Fps30, false));
     }
 
     #[test]
@@ -300,7 +304,7 @@ mod tests {
         for rate in [Rate::Fps24, Rate::Fps25, Rate::Fps2997Drop, Rate::Fps30] {
             let mut reader = Reader::new();
             match spell(&mut reader, at(1, 2, 3, 4), rate)[7] {
-                Heard::At(_, got) => assert_eq!(got, rate),
+                Heard::At(_, got, false) => assert_eq!(got, rate),
                 other => panic!("{rate:?} gave {other:?}"),
             }
         }
@@ -315,7 +319,7 @@ mod tests {
         let message = crate::mtc::full_frame(at(10, 11, 12, 13), Rate::Fps25);
         assert_eq!(
             reader.take(&message),
-            Heard::At(at(10, 11, 12, 13), Rate::Fps25)
+            Heard::At(at(10, 11, 12, 13), Rate::Fps25, false)
         );
     }
 
@@ -331,7 +335,10 @@ mod tests {
             last = reader.take(&quarter_frame(piece, position, Rate::Fps25));
         }
         match last {
-            Heard::At(got, _) => assert_eq!(got, at(10, 0, 5, 12)),
+            Heard::At(got, _, reverse) => {
+                assert!(reverse);
+                assert_eq!(got, at(10, 0, 5, 8));
+            }
             other => panic!("a rewind reported {other:?}"),
         }
     }

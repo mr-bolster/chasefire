@@ -38,6 +38,15 @@ rather than good intentions:
   Frames are checked for valid BCD, checked against the parity bit where the
   source keeps one, and **held back until a second frame confirms any jump**.
 - When the signal goes it **freewheels** for eight frames before admitting it.
+- Timecode labels are checked against the active rate. A cue at frame 50 in a
+  25 fps show is refused instead of being silently fired two seconds later.
+- 50/60 fps are disabled for now. Their native labels do not fit on LTC/MTC;
+  the paired-frame convention needs an independent fixture before it is safe
+  enough to drive cues.
+- Drop-frame arithmetic now counts real frames across `;29` → `;02`, so offset
+  and countdown keep their meaning at minute boundaries.
+- Reverse MTC keeps its direction and subtracts the two frames spent spelling
+  a quarter-frame sequence instead of adding them.
 
 ## Measured, not guessed
 

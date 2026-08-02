@@ -21,6 +21,7 @@ use std::sync::mpsc::{self, Receiver};
 pub struct Position {
     pub at: Timecode,
     pub rate: Rate,
+    pub reverse: bool,
 }
 
 /// An open MIDI input, reading timecode. Dropping it closes the port.
@@ -72,10 +73,10 @@ impl MtcInput {
                 found,
                 "chasefire-mtc",
                 move |_stamp, bytes, _| {
-                    if let Heard::At(at, rate) = reader.take(bytes) {
+                    if let Heard::At(at, rate, reverse) = reader.take(bytes) {
                         // If nobody is collecting any more the show is over;
                         // there is nothing useful to do about it here.
-                        let _ = sender.send(Position { at, rate });
+                        let _ = sender.send(Position { at, rate, reverse });
                     }
                 },
                 (),

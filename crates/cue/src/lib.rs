@@ -411,7 +411,11 @@ impl Engine {
         for index in 0..self.cues.len() {
             let cue_position = self.position_of(self.cues[index].at);
             let crossed = cue_position > previous && cue_position <= position;
-            if !crossed || !self.armed_states[index] || !self.cues[index].enabled {
+            if !crossed
+                || !self.armed_states[index]
+                || !self.cues[index].enabled
+                || !self.cues[index].at.is_valid_at(self.nominal_fps)
+            {
                 continue;
             }
             // Disarm even when the master switch is off, so that flipping to
@@ -444,7 +448,7 @@ impl Engine {
         self.armed_states
             .iter()
             .zip(&self.cues)
-            .filter(|(armed, cue)| **armed && cue.enabled)
+            .filter(|(armed, cue)| **armed && cue.enabled && cue.at.is_valid_at(self.nominal_fps))
             .count()
     }
 
@@ -453,7 +457,11 @@ impl Engine {
         let now = self.position_of(timecode);
         self.cues
             .iter()
-            .filter(|cue| cue.enabled && self.position_of(cue.at) > now)
+            .filter(|cue| {
+                cue.enabled
+                    && cue.at.is_valid_at(self.nominal_fps)
+                    && self.position_of(cue.at) > now
+            })
             .min_by_key(|cue| self.position_of(cue.at))
     }
 
@@ -464,14 +472,17 @@ impl Engine {
     /// Arm everything ahead of `position`, disarm everything behind it.
     fn settle_at(&mut self, position: i64) {
         for index in 0..self.cues.len() {
-            self.armed_states[index] = self.position_of(self.cues[index].at) > position;
+            self.armed_states[index] = self.cues[index].at.is_valid_at(self.nominal_fps)
+                && self.position_of(self.cues[index].at) > position;
         }
     }
 
     /// Arm everything ahead of `position`, leaving the past alone.
     fn rearm_after(&mut self, position: i64) {
         for index in 0..self.cues.len() {
-            if self.position_of(self.cues[index].at) > position {
+            if self.cues[index].at.is_valid_at(self.nominal_fps)
+                && self.position_of(self.cues[index].at) > position
+            {
                 self.armed_states[index] = true;
             }
         }
@@ -639,6 +650,39 @@ mod tests {
             Timecode::new(10, 0, 2, 0),
             "programmed time changed"
         );
+    }
+
+    #[test]
+    fn an_offset_crosses_a_drop_frame_minute_in_real_frames() {
+        let cue = Cue::new(
+            1,
+            "drop boundary",
+            Timecode::new(0, 1, 0, 2).with_drop_frame(true),
+            Message::Osc {
+                address: "/go".into(),
+                args: Vec::new(),
+            },
+        );
+        let mut engine = Engine::new(30);
+        engine.set_cues(vec![cue]);
+        engine.set_armed(true);
+        engine.set_offset_frames(1);
+
+        engine.update(Timecode::new(0, 0, 59, 28).with_drop_frame(true), false);
+        let fired = engine.update(Timecode::new(0, 0, 59, 29).with_drop_frame(true), false);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(
+            fired[0].fired_at,
+            Timecode::new(0, 0, 59, 29).with_drop_frame(true)
+        );
+    }
+
+    #[test]
+    fn a_cue_with_a_frame_that_does_not_exist_never_fires() {
+        let mut engine = armed_engine(vec![osc_cue(1, 0, 50)]);
+        let fired = play(&mut engine, Timecode::new(10, 0, 0, 0), 100);
+        assert!(fired.is_empty());
+        assert_eq!(engine.pending_count(), 0);
     }
 
     #[test]

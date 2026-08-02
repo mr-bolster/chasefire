@@ -60,7 +60,7 @@ mod unix_only {
         // Run a second of 25 fps timecode past it, the way the runner would.
         std::thread::spawn(move || {
             for frame in 0..25u8 {
-                clock.at(at(10, 0, 0, frame), 25.0);
+                clock.at(at(10, 0, 0, frame), 25.0, false);
                 std::thread::sleep(Duration::from_millis(40));
             }
             // Held until the end so the clock is not dropped early.

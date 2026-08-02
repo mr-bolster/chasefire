@@ -51,7 +51,8 @@ orden correcto. Todo eso se puede escribir.
 ## Qué tiene
 
 - **Entrada:** LTC por tarjeta de sonido a 44,1 / 48 / 96 kHz, o MTC por puerto
-  MIDI. 24, 25, 30, 50 y 60 fps, drop frame incluido.
+  MIDI. 23,98, 24, 25, 29,97 drop-frame y 30 fps. 50/60 quedan desactivados
+  hasta demostrar su representación por pares contra un fixture real e independiente.
 - **Salida:** OSC, MIDI, MSC, RTP-MIDI — varios destinos a la vez, cada uno con
   un nombre al que una cue puede apuntar.
 - **Reloj de salida:** MTC, con el ritmo correcto, para que un receptor pueda

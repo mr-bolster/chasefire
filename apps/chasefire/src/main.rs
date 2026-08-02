@@ -401,18 +401,9 @@ impl Window {
         }
 
         if let Some(path) = &cue_file {
-            match std::fs::read_to_string(path)
-                .map_err(|error| error.to_string())
-                .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
-            {
-                Ok(cues) => {
-                    let cues: Vec<cue::Cue> = cues;
-                    notes.push(
-                        startup_words
-                            .cues_loaded
-                            .replace("{}", &cues.len().to_string()),
-                    );
-                    runner.set_cues(cues);
+            match runner.load_cues(std::path::Path::new(path)) {
+                Ok(count) => {
+                    notes.push(startup_words.cues_loaded.replace("{}", &count.to_string()));
                 }
                 Err(error) => notes.push(format!("cues: {error}")),
             }

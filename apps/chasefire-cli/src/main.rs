@@ -40,7 +40,7 @@ MODES:
 OPTIONS:
     --cues <file>     Cue list, JSON (required)
     --osc <host:port> Where to send OSC            [default: 127.0.0.1:7000]
-    --fps <n>         24, 25, 29.97, 30, 50, 59.94.
+    --fps <n>         23.98, 24, 25, 29.97 or 30.
                       Left out, wav mode works it
                       out from the signal itself
     --from <tc>       Start timecode; write it with a
@@ -117,6 +117,18 @@ fn run() -> Result<(), String> {
     }
 
     let cues = load_cues(&options.cues)?;
+    let invalid: Vec<String> = cues
+        .iter()
+        .filter(|cue| !cue.at.is_valid_at(options.nominal_fps))
+        .map(|cue| format!("{} ('{}') at {}", cue.id, cue.name, cue.at))
+        .collect();
+    if !invalid.is_empty() {
+        return Err(format!(
+            "cue timecode does not exist at {} fps: {}",
+            options.nominal_fps,
+            invalid.join(", ")
+        ));
+    }
     println!("Loaded {} cues from {}", cues.len(), options.cues.display());
 
     let mut engine = Engine::new(options.nominal_fps);
@@ -778,6 +790,13 @@ fn parse_arguments() -> Result<Options, String> {
         }
     }
 
+    if !options.from.is_valid_at(options.nominal_fps) {
+        return Err(format!(
+            "{} is not a valid label at {} fps",
+            options.from, options.nominal_fps
+        ));
+    }
+
     if options.cues.as_os_str().is_empty()
         && !matches!(
             options.mode,
@@ -799,9 +818,6 @@ fn parse_frame_rate(text: &str) -> Result<(f64, u8), String> {
         "25" => (25.0, 25),
         "29.97" => (30_000.0 / 1001.0, 30),
         "30" => (30.0, 30),
-        "50" => (50.0, 50),
-        "59.94" => (60_000.0 / 1001.0, 60),
-        "60" => (60.0, 60),
         other => return Err(format!("'{other}' is not a frame rate I know")),
     })
 }
@@ -831,4 +847,23 @@ fn parse_timecode(text: &str) -> Result<Timecode, String> {
         return Err(format!("'{text}' is out of range"));
     }
     Ok(timecode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn high_frame_rates_are_refused_until_their_pairing_is_implemented() {
+        for rate in ["50", "59.94", "60"] {
+            assert!(parse_frame_rate(rate).is_err(), "accepted {rate}");
+        }
+    }
+
+    #[test]
+    fn a_frame_label_that_cannot_fit_on_the_wire_is_refused() {
+        assert!(parse_timecode("00:00:00:29").is_ok());
+        assert!(parse_timecode("00:00:00:30").is_err());
+        assert!(parse_timecode("00:01:00;00").is_err());
+    }
 }
