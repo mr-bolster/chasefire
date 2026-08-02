@@ -493,18 +493,17 @@ impl Runner {
     pub fn load_cues(&mut self, path: &std::path::Path) -> Result<usize, String> {
         let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
         let cues: Vec<Cue> = serde_json::from_str(&text).map_err(|error| error.to_string())?;
-        let nominal = self.frame_rate().map(|rate| rate.ceil() as u8);
-        if let Some(cue) = cues.iter().find(|cue| {
-            nominal
-                .map(|fps| !cue.at.is_valid_at(fps))
-                .unwrap_or_else(|| !cue.at.is_plausible())
-        }) {
-            let at_rate = nominal
-                .map(|fps| format!(" at {fps} fps"))
-                .unwrap_or_default();
+        // Refused only for a timecode that cannot exist in any format — a file
+        // that is corrupt rather than one that is for a different show.
+        //
+        // A cue that is merely wrong *at tonight's rate* still loads, because
+        // the editor is the thing that would fix it and refusing to open the
+        // file puts the fix behind the complaint. `set_cues` raises it as an
+        // error on screen instead, which is loud without being a locked door.
+        if let Some(cue) = cues.iter().find(|cue| !cue.at.is_plausible()) {
             return Err(format!(
-                "cue {} ('{}') has an invalid timecode {}{}",
-                cue.id, cue.name, cue.at, at_rate
+                "cue {} ('{}') has a timecode that cannot exist: {}",
+                cue.id, cue.name, cue.at
             ));
         }
         let count = cues.len();
@@ -955,7 +954,33 @@ mod tests {
         let mut runner = Runner::new(25);
         runner.pin_frame_rate(Some(25.0));
         let error = runner.load_cues(&path).expect_err("invalid cue was loaded");
-        assert!(error.contains("invalid timecode"), "{error}");
+        assert!(error.contains("cannot exist"), "{error}");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn a_file_for_another_rate_still_opens_so_it_can_be_fixed() {
+        // Frame 27 exists — at 30 fps. Tonight is 25, so it will never fire,
+        // and the window says so. But the file has to open: the editor is what
+        // would fix it, and refusing to load puts the fix behind the
+        // complaint. Refusal is for a timecode that cannot exist anywhere.
+        let path =
+            std::env::temp_dir().join(format!("chasefire-other-rate-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"[{"id":1,"name":"para 30","at":{"hours":0,"minutes":0,"seconds":0,"frames":27,"drop_frame":false},"enabled":true,"steps":[{"send":{"Osc":{"address":"/go","args":[]}}}]}]"#,
+        )
+        .unwrap();
+
+        let mut runner = Runner::new(25);
+        runner.pin_frame_rate(Some(25.0));
+        let count = runner
+            .load_cues(&path)
+            .expect("a file for another rate should still open");
+        assert_eq!(count, 1);
+
+        let complaint = runner.error().expect("it should be complaining");
+        assert!(complaint.contains("para 30"), "{complaint}");
         std::fs::remove_file(path).ok();
     }
 

@@ -750,10 +750,19 @@ impl Encoder {
         amplitude: f32,
         out: &mut Vec<f32>,
     ) {
-        assert!(
-            timecode.is_valid_at(nominal_fps),
-            "{timecode} is not a valid label at {nominal_fps} fps"
-        );
+        // A label that cannot exist gets a frame of silence, not a panic.
+        //
+        // This runs inside the audio callback. A panic there unwinds across a
+        // C boundary, which aborts the process — and it would abort it while
+        // generating timecode for a show. Silence is the honest output: a
+        // receiver sees no timecode, which is true, rather than a wrong one,
+        // which is worse. `encode_sequence` refuses loudly instead, because it
+        // is offline and the caller can be told.
+        if !timecode.is_valid_at(nominal_fps) {
+            let samples = (sample_rate / fps).round() as usize;
+            out.resize(out.len() + samples, 0.0);
+            return;
+        }
         let bits = build_frame_bits(timecode, nominal_fps);
         let samples_per_bit = sample_rate / (FRAME_BITS as f64 * fps);
 
@@ -784,6 +793,15 @@ impl Encoder {
 
     /// Append `spec.count` consecutive frames, returning the timecodes written.
     pub fn encode_sequence(&mut self, spec: Sequence, out: &mut Vec<f32>) -> Vec<Timecode> {
+        // Offline, so the caller is present to be told. `encode_frame` cannot
+        // do this — it runs in the audio callback, where a panic aborts the
+        // process mid-show.
+        assert!(
+            spec.start.is_valid_at(spec.nominal_fps),
+            "{} is not a valid label at {} fps",
+            spec.start,
+            spec.nominal_fps
+        );
         let mut timecode = spec.start;
         let mut written = Vec::with_capacity(spec.count as usize);
         for _ in 0..spec.count {
@@ -1250,6 +1268,29 @@ mod tests {
             decoded.is_empty(),
             "decoded {} frames of noise",
             decoded.len()
+        );
+    }
+
+    #[test]
+    fn a_label_that_cannot_exist_gives_silence_rather_than_a_panic() {
+        // `encode_frame` runs inside the audio callback. A panic there unwinds
+        // across a C boundary and aborts the process — while generating
+        // timecode for a show. Silence is true (there is no timecode) where a
+        // wrong label would be a lie, and a whole frame of it keeps the clock
+        // where it should be.
+        let mut audio = Vec::new();
+        Encoder::new().encode_frame(
+            Timecode::new(1, 0, 0, 42),
+            25,
+            25.0,
+            48_000.0,
+            0.5,
+            &mut audio,
+        );
+        assert_eq!(audio.len(), 1920, "one frame of 25 fps at 48 kHz");
+        assert!(
+            audio.iter().all(|sample| *sample == 0.0),
+            "a label that cannot exist must not go out sounding like one that can"
         );
     }
 
